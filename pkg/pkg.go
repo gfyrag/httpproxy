@@ -17,12 +17,57 @@ var (
 	}
 )
 
-func handleTunneling(w http.ResponseWriter, r *http.Request) {
+type ConnectHandler interface {
+	Serve(io.Writer, io.Reader) error
+}
+type ConnectHandlerFn func(net.Conn, net.Conn) error
+func (fn ConnectHandlerFn) Serve(w net.Conn, r net.Conn) error {
+	return fn(w, r)
+}
+
+var DefaultConnectHandler = func(w net.Conn, r net.Conn) error {
+	go io.Copy(w, r)
+	_, err := io.Copy(r, w)
+	return err
+}
+
+type Proxy struct {
+	ConnectHandler ConnectHandler
+}
+
+func (p *Proxy) handleRequest(w http.ResponseWriter, r *http.Request) error {
+	hi, ok := w.(http.Hijacker)
+	if !ok {
+		panic("conn can't be hijacked")
+	}
+
+	uri, err := url.Parse(r.RequestURI)
+	if err != nil {
+		return err
+	}
+
+	r.URL = uri
+	r.RequestURI = ""
+
+	resp, err := httpClient.Do(r)
+	if err != nil {
+		return err
+	}
+
+	clientConn, _, err := hi.Hijack()
+	if err != nil {
+		return err
+	}
+	defer clientConn.Close()
+
+	return resp.Write(clientConn)
+}
+
+func (p *Proxy) handleTunneling(w http.ResponseWriter, r *http.Request) error {
 
 	remoteConn, err := net.DialTimeout("tcp", r.Host, 10 * time.Second)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
+		return err
 	}
 	defer remoteConn.Close()
 	w.WriteHeader(http.StatusOK)
@@ -34,55 +79,26 @@ func handleTunneling(w http.ResponseWriter, r *http.Request) {
 
 	clientConn, _, err := hi.Hijack()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
+		return err
 	}
 	defer clientConn.Close()
 
-	go io.Copy(remoteConn, clientConn)
-	io.Copy(clientConn, remoteConn)
+	if p.ConnectHandler != nil {
+		return p.ConnectHandler.Serve(remoteConn, clientConn)
+	} else {
+		return DefaultConnectHandler(remoteConn, clientConn)
+	}
+
 }
 
-func handleRequest(w http.ResponseWriter, r *http.Request) {
-	hi, ok := w.(http.Hijacker)
-	if !ok {
-		panic("conn can't be hijacked")
+func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var err error
+	if r.Method == http.MethodConnect {
+		err = p.handleTunneling(w, r)
+	} else {
+		err = p.handleRequest(w, r)
 	}
-
-	uri, err := url.Parse(r.RequestURI)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
 	}
-
-	r.URL = uri
-	r.RequestURI = ""
-
-	resp, err := httpClient.Do(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	}
-
-	clientConn, _, err := hi.Hijack()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	}
-	defer clientConn.Close()
-
-	err = resp.Write(clientConn)
-	if err != nil {
-		panic(err)
-	}
-}
-
-func Handler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodConnect {
-			handleTunneling(w, r)
-		} else {
-			handleRequest(w, r)
-		}
-	})
 }

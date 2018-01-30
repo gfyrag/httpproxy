@@ -14,7 +14,7 @@ type HTTPProxyTestSuite struct {
 }
 
 func (s *HTTPProxyTestSuite) TestHTTP() {
-	srv := httptest.NewServer(Handler())
+	srv := httptest.NewServer(&Proxy{})
 	defer srv.Close()
 
 	proxyUrl, err := url.Parse(srv.URL)
@@ -38,7 +38,7 @@ func (s *HTTPProxyTestSuite) TestHTTP() {
 }
 
 func (s *HTTPProxyTestSuite) TestHTTPS() {
-	srv := httptest.NewServer(Handler())
+	srv := httptest.NewServer(&Proxy{})
 	defer srv.Close()
 
 	proxyUrl, err := url.Parse(srv.URL)
