@@ -79,12 +79,17 @@ func (r *Request) dialRemote() (err error) {
 
 func (r *Request) handleRequest(req *http.Request) error {
 
-	resp, date, err := r.cache.Request(req)
-	if err != nil {
-		if err != ErrCacheMiss {
-			return err
-		}
+	resp, at, expires, err := r.cache.Request(req)
 
+	if err != nil && err != ErrCacheMiss {
+		return err
+	}
+
+	if time.Now().After(expires) {
+		r.cache.Evict(req)
+	}
+
+	if err == ErrCacheMiss || time.Now().After(expires) {
 		err = r.dialRemote()
 		if err != nil {
 			return err
@@ -105,10 +110,10 @@ func (r *Request) handleRequest(req *http.Request) error {
 			return err
 		}
 		return resp.Write(r.clientConn)
-	} else {
-		resp.Header.Set("Age", fmt.Sprintf("%d", int(time.Now().Sub(date).Seconds())))
-		return resp.Write(r.clientConn)
 	}
+
+	resp.Header.Set("Age", fmt.Sprintf("%d", int(time.Now().Sub(at).Seconds())))
+	return resp.Write(r.clientConn)
 }
 
 func (r *Request) writeStatusLine(status int, text string) error {

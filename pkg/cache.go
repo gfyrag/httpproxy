@@ -18,50 +18,56 @@ var (
 )
 
 type CacheStorage interface {
-	Get(string) (*http.Response, time.Time, error)
-	Put(string, *http.Response) error
+	Get(string) (*http.Response, time.Time, time.Time, error)
+	Put(string, *http.Response, time.Time) error
+	Delete(string)
+}
+
+type cacheEntry struct {
+	rsp *http.Response
+	at  time.Time
+	expires time.Time
 }
 
 type inmemoryCacheStorage struct {
 	mu sync.Mutex
-	responses map[string]struct {
-		rsp *http.Response
-		date time.Time
-	}
+	responses map[string]cacheEntry
 }
 
 func (s *inmemoryCacheStorage) init() {
 	if s.responses == nil {
-		s.responses = make(map[string]struct {
-			rsp *http.Response
-			date time.Time
-		})
+		s.responses = make(map[string]cacheEntry)
 	}
 }
 
-func (s *inmemoryCacheStorage) Get(id string) (*http.Response, time.Time, error) {
+func (s *inmemoryCacheStorage) Get(id string) (*http.Response, time.Time, time.Time, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.init()
 	entry, ok := s.responses[id]
 	if !ok {
-		return nil, time.Time{}, ErrCacheMiss
+		return nil, time.Time{}, time.Time{}, ErrCacheMiss
 	}
-	return entry.rsp, entry.date, nil
+	return entry.rsp, entry.at, entry.expires, nil
 }
 
-func (s *inmemoryCacheStorage) Put(id string, rsp *http.Response) error {
+func (s *inmemoryCacheStorage) Put(id string, rsp *http.Response, expires time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.init()
-	s.responses[id] = struct {
-		rsp *http.Response
-		date time.Time
-	}{
+	s.responses[id] = cacheEntry{
 		rsp: rsp,
-		date: time.Now(),
+		at: time.Now(),
+		expires: expires,
 	}
 	return nil
+}
+
+func (s *inmemoryCacheStorage) Delete(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.init()
+	delete(s.responses, id)
 }
 
 type Cache struct {
@@ -74,21 +80,24 @@ func (c *Cache) id(req *http.Request) string {
 }
 
 func (c *Cache) init() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.Storage == nil {
 		c.Storage = &inmemoryCacheStorage{}
 	}
 }
 
-func (c *Cache) Request(req *http.Request) (*http.Response, time.Time, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (c *Cache) Request(req *http.Request) (*http.Response, time.Time, time.Time, error) {
 	c.init()
 	return c.Storage.Get(c.id(req))
 }
 
+func (c *Cache) Evict(req *http.Request) {
+	c.init()
+	c.Storage.Delete(c.id(req))
+}
+
 func (c *Cache) Accept(req *http.Request, rsp *http.Response) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.init()
 
 	reasons, date, err := cachecontrol.CachableResponse(req, rsp, cachecontrol.Options{})
@@ -105,7 +114,7 @@ func (c *Cache) Accept(req *http.Request, rsp *http.Response) error {
 		logrus.Debugf("No expiration date")
 		return nil
 	}
-	return c.Storage.Put(c.id(req), rsp)
+	return c.Storage.Put(c.id(req), rsp, date)
 }
 
 

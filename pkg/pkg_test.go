@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"github.com/Sirupsen/logrus"
 	"context"
+	"time"
 )
 
 func init() {
@@ -26,7 +27,7 @@ type HTTPProxyTestSuite struct {
 
 func (s *HTTPProxyTestSuite) SetupTest() {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "max-age=120")
+		w.Header().Set("Cache-Control", "max-age=2")
 		w.WriteHeader(http.StatusNoContent)
 	})
 	s.proxy = &Proxy{}
@@ -108,7 +109,7 @@ func (s *HTTPProxyTestSuite) TestCache() {
 	s.NoError(err)
 	s.NotNil(rsp)
 	s.Equal(http.StatusNoContent, rsp.StatusCode)
-	_, _, err = s.proxy.Cache.Storage.Get("GET:" + s.httpBackend.URL + "/")
+	_, _, _, err = s.proxy.Cache.Storage.Get("GET:" + s.httpBackend.URL + "/")
 	s.NoError(err)
 
 	rsp, err = s.client.Get(s.httpBackend.URL)
@@ -116,6 +117,14 @@ func (s *HTTPProxyTestSuite) TestCache() {
 	s.NotNil(rsp)
 	s.Equal(http.StatusNoContent, rsp.StatusCode)
 	s.NotEmpty(rsp.Header.Get("Age"))
+
+	<-time.After(2*time.Second)
+
+	rsp, err = s.client.Get(s.httpBackend.URL)
+	s.NoError(err)
+	s.NotNil(rsp)
+	s.Equal(http.StatusNoContent, rsp.StatusCode)
+	s.Empty(rsp.Header.Get("Age"))
 }
 
 func TestProxy(t *testing.T) {
