@@ -110,24 +110,24 @@ func (c *Cache) Evict(req *http.Request) {
 	c.Storage.Delete(c.id(req))
 }
 
-func (c *Cache) Accept(req *http.Request, rsp *http.Response) error {
+func (c *Cache) Accept(req *http.Request, rsp *http.Response) (time.Time, error) {
 	c.init()
 
-	reasons, date, err := cachecontrol.CachableResponse(req, rsp, cachecontrol.Options{})
+	reasons, expires, err := cachecontrol.CachableResponse(req, rsp, cachecontrol.Options{})
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
 
 	if len(reasons) > 0 {
 		logrus.Debugf("No caching because of: %s", reasons)
-		return nil
+		return time.Time{}, nil
 	}
-	if date.IsZero() {
+	if expires.IsZero() {
 		// TODO: Use heuristic to make a choice
 		logrus.Debugf("No expiration date")
-		return nil
+		return time.Time{}, nil
 	}
-	return c.Storage.Put(c.id(req), rsp, date)
+	return expires, c.Storage.Put(c.id(req), rsp, expires)
 }
 
 

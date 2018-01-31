@@ -107,11 +107,15 @@ func (r *Request) handleRequest(req *http.Request) error {
 		}
 		defer resp.Body.Close()
 
-		err = r.proxy.Cache.Accept(req, resp)
+		expires, err = r.proxy.Cache.Accept(req, resp)
 		if err != nil {
 			return err
 		}
-		r.logger.Debugf("cache response")
+		if expires.IsZero() {
+			r.logger.Debugf("not cacheable response")
+		} else {
+			r.logger.Debugf("cache response, will expires at %s", expires)
+		}
 		return resp.Write(r.clientConn)
 	}
 
