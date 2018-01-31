@@ -182,9 +182,6 @@ type Proxy struct {
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
-	id := uuid.New()
-	logger := p.Logger.WithField("id", id)
-	logger.Debugf("serve request %s", r.URL)
 	if p.Cache == nil {
 		p.Cache = &Cache{}
 	}
@@ -194,6 +191,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if p.ConnectHandler == nil {
 		p.ConnectHandler = DefaultConnectHandler
 	}
+
+	id := uuid.New()
+	logger := p.Logger.WithField("id", id)
+	logger.Debugf("serve request %s", r.URL)
 
 	hi, ok := w.(http.Hijacker)
 	if !ok {
