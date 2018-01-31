@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"github.com/Sirupsen/logrus"
 	"sync"
+	"github.com/pborman/uuid"
 )
 
 type ConnectHandler interface {
@@ -48,45 +49,45 @@ func (b *SSLBump) Serve(r *Request) error {
 	if err != nil {
 		return err
 	}
-	err = r.dialRemote()
-	if err != nil {
-		return err
+	originalDialer := r.dialer
+	r.dialer = func() error {
+		originalDialer()
+		r.remoteConn = tls.Client(r.remoteConn, b.Config)
+		return nil
 	}
-	r.remoteConn = tls.Client(r.remoteConn, b.Config)
 	return r.handleRequest(req)
 }
 
+type dialer func() error
+
 type Request struct {
 	*http.Request
-	once sync.Once
-	clientConn     net.Conn
-	remoteConn     net.Conn
-	connectHandler ConnectHandler
-	cache          *Cache
+	proxy      *Proxy
+	once       sync.Once
+	clientConn net.Conn
+	remoteConn net.Conn
+	logger     *logrus.Entry
+	dialer     dialer
 }
 
 func (r *Request) dialRemote() (err error) {
 	r.once.Do(func() {
-		address := r.URL.Host
-		if r.URL.Port() == "" {
-			address += ":80"
-		}
-
-		r.remoteConn, err = net.DialTimeout("tcp", address, 10 * time.Second)
+		err = r.dialer()
 	})
 	return err
 }
 
 func (r *Request) handleRequest(req *http.Request) error {
 
-	resp, at, expires, err := r.cache.Request(req)
+	resp, at, expires, err := r.proxy.Cache.Request(req)
 
 	if err != nil && err != ErrCacheMiss {
 		return err
 	}
 
-	if time.Now().After(expires) {
-		r.cache.Evict(req)
+	if err == nil && time.Now().After(expires) {
+		r.logger.Debugf("find cached response but expired at %s", expires)
+		r.proxy.Cache.Evict(req)
 	}
 
 	if err == ErrCacheMiss || time.Now().After(expires) {
@@ -104,14 +105,17 @@ func (r *Request) handleRequest(req *http.Request) error {
 		if err != nil {
 			return err
 		}
+		defer resp.Body.Close()
 
-		err = r.cache.Accept(req, resp)
+		err = r.proxy.Cache.Accept(req, resp)
 		if err != nil {
 			return err
 		}
+		r.logger.Debugf("cache response")
 		return resp.Write(r.clientConn)
 	}
 
+	r.logger.Debugf("serve cached response, will expires at %s", expires)
 	resp.Header.Set("Age", fmt.Sprintf("%d", int(time.Now().Sub(at).Seconds())))
 	return resp.Write(r.clientConn)
 }
@@ -122,16 +126,12 @@ func (r *Request) writeStatusLine(status int, text string) error {
 }
 
 func (r *Request) handleTunneling() error {
+	r.logger.Debugf("start tunneling request")
 	err := r.writeStatusLine(http.StatusOK, http.StatusText(http.StatusOK))
 	if err != nil {
 		return err
 	}
-
-	if r.connectHandler != nil {
-		return r.connectHandler.Serve(r)
-	} else {
-		return DefaultConnectHandler(r)
-	}
+	return r.proxy.ConnectHandler.Serve(r)
 }
 
 func (r *Request) Serve() {
@@ -140,6 +140,17 @@ func (r *Request) Serve() {
 			r.remoteConn.Close()
 		}
 	}()
+
+	r.dialer = func() (err error) {
+		address := r.URL.Host
+		if r.URL.Port() == "" {
+			address += ":80"
+		}
+		r.logger.Debugf("dial remote %s", address)
+		r.remoteConn, err = net.Dial("tcp", address)
+		return err
+	}
+
 	var err error
 	if r.Method == http.MethodConnect {
 		err = r.handleTunneling()
@@ -147,12 +158,13 @@ func (r *Request) Serve() {
 		err = r.handleRequest(r.Request)
 	}
 	if err != nil {
+		r.proxy.Logger.Debugf("serve request error: %s", err)
 		if e, ok := err.(*net.OpError); ok && e.Err.Error() == "tls: bad certificate" {
-			logrus.Error(e)
+			// Cannot respond since the tls handshake is unsuccessful
 		} else {
 			err = r.writeStatusLine(http.StatusServiceUnavailable, err.Error())
 			if err != nil {
-				panic(err)
+				r.proxy.Logger.Errorf("serve request error: %s", err)
 			}
 		}
 	}
@@ -161,12 +173,22 @@ func (r *Request) Serve() {
 type Proxy struct {
 	ConnectHandler ConnectHandler
 	Cache          *Cache
+	Logger         *logrus.Logger
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
+	id := uuid.New()
+	logger := p.Logger.WithField("id", id)
+	logger.Debugf("serve request %s", r.URL)
 	if p.Cache == nil {
 		p.Cache = &Cache{}
+	}
+	if p.Logger == nil {
+		p.Logger = logrus.New()
+	}
+	if p.ConnectHandler == nil {
+		p.ConnectHandler = DefaultConnectHandler
 	}
 
 	hi, ok := w.(http.Hijacker)
@@ -182,10 +204,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer clientConn.Close()
 
 	req := &Request{
+		proxy: p,
 		clientConn: clientConn,
 		Request: r,
-		connectHandler: p.ConnectHandler,
-		cache: p.Cache,
+		logger: logger,
 	}
 	req.Serve()
 }

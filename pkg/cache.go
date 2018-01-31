@@ -11,6 +11,8 @@ import (
 	"github.com/Sirupsen/logrus"
 	"fmt"
 	"time"
+	"io/ioutil"
+	"bytes"
 )
 
 var (
@@ -27,6 +29,7 @@ type cacheEntry struct {
 	rsp *http.Response
 	at  time.Time
 	expires time.Time
+	data []byte
 }
 
 type inmemoryCacheStorage struct {
@@ -48,6 +51,7 @@ func (s *inmemoryCacheStorage) Get(id string) (*http.Response, time.Time, time.T
 	if !ok {
 		return nil, time.Time{}, time.Time{}, ErrCacheMiss
 	}
+	entry.rsp.Body = ioutil.NopCloser(bytes.NewBuffer(entry.data))
 	return entry.rsp, entry.at, entry.expires, nil
 }
 
@@ -55,10 +59,19 @@ func (s *inmemoryCacheStorage) Put(id string, rsp *http.Response, expires time.T
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.init()
+
+	data, err := ioutil.ReadAll(rsp.Body)
+	if err != nil {
+		return err
+	}
+	rsp.Body.Close()
+	rsp.Body = ioutil.NopCloser(bytes.NewBuffer(data))
+
 	s.responses[id] = cacheEntry{
 		rsp: rsp,
 		at: time.Now(),
 		expires: expires,
+		data: data,
 	}
 	return nil
 }
