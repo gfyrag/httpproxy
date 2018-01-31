@@ -108,8 +108,14 @@ func (s *HTTPProxyTestSuite) TestCache() {
 	s.NoError(err)
 	s.NotNil(rsp)
 	s.Equal(http.StatusNoContent, rsp.StatusCode)
-	_, err = s.proxy.Cache.Storage.Get("GET:" + s.httpBackend.URL + "/")
+	_, _, err = s.proxy.Cache.Storage.Get("GET:" + s.httpBackend.URL + "/")
 	s.NoError(err)
+
+	rsp, err = s.client.Get(s.httpBackend.URL)
+	s.NoError(err)
+	s.NotNil(rsp)
+	s.Equal(http.StatusNoContent, rsp.StatusCode)
+	s.NotEmpty(rsp.Header.Get("Age"))
 }
 
 func TestProxy(t *testing.T) {

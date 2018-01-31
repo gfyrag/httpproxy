@@ -21,8 +21,11 @@ func (fn ConnectHandlerFn) Serve(r *Request) error {
 	return fn(r)
 }
 
-var DefaultConnectHandler ConnectHandlerFn = func(request *Request) error {
-	request.dialRemote()
+var DefaultConnectHandler ConnectHandlerFn = func(request *Request) (err error) {
+	err = request.dialRemote()
+	if err != nil {
+		return err
+	}
 	go io.Copy(request.remoteConn, request.clientConn)
 	io.Copy(request.clientConn, request.remoteConn)
 	return nil
@@ -45,7 +48,10 @@ func (b *SSLBump) Serve(r *Request) error {
 	if err != nil {
 		return err
 	}
-	r.dialRemote()
+	err = r.dialRemote()
+	if err != nil {
+		return err
+	}
 	r.remoteConn = tls.Client(r.remoteConn, b.Config)
 	return r.handleRequest(req)
 }
@@ -73,12 +79,16 @@ func (r *Request) dialRemote() (err error) {
 
 func (r *Request) handleRequest(req *http.Request) error {
 
-	resp, err := r.cache.Request(req)
+	resp, date, err := r.cache.Request(req)
 	if err != nil {
 		if err != ErrCacheMiss {
 			return err
 		}
-		r.dialRemote()
+
+		err = r.dialRemote()
+		if err != nil {
+			return err
+		}
 
 		err := req.Write(r.remoteConn)
 		if err != nil {
@@ -96,6 +106,7 @@ func (r *Request) handleRequest(req *http.Request) error {
 		}
 		return resp.Write(r.clientConn)
 	} else {
+		resp.Header.Set("Age", fmt.Sprintf("%d", int(time.Now().Sub(date).Seconds())))
 		return resp.Write(r.clientConn)
 	}
 }
