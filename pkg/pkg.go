@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"bufio"
 	"fmt"
+	"github.com/Sirupsen/logrus"
 )
 
 type ConnectHandler interface {
@@ -115,9 +116,13 @@ func (r *Request) Serve() {
 		err = r.handleRequest()
 	}
 	if err != nil {
-		err = r.writeStatusLine(http.StatusServiceUnavailable, err.Error())
-		if err != nil {
-			panic(err)
+		if e := err.(*net.OpError); e.Err.Error() == "tls: bad certificate" {
+			logrus.Error(e)
+		} else {
+			err = r.writeStatusLine(http.StatusServiceUnavailable, err.Error())
+			if err != nil {
+				panic(err)
+			}
 		}
 	}
 }

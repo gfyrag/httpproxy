@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"crypto/tls"
+	"golang.org/x/net/context"
 )
 
 type HTTPProxyTestSuite struct {
@@ -68,6 +69,45 @@ func (s *HTTPProxyTestSuite) TestHTTPSBump() {
 	srv := httptest.NewServer(&Proxy{
 		ConnectHandler: &SSLBump{
 			Config: DefaultTLSConfig(),
+		},
+	})
+	defer srv.Close()
+
+	proxyUrl, err := url.Parse(srv.URL)
+	s.NoError(err)
+
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyUrl),
+			DisableCompression: true,
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+			TLSNextProto:    make(map[string]func(string, *tls.Conn) http.RoundTripper),
+		},
+	}
+
+	rsp, err := client.Get("https://google.fr")
+	s.NoError(err)
+	s.NotNil(rsp)
+	s.Equal(http.StatusMovedPermanently, rsp.StatusCode)
+}
+
+func (s *HTTPProxyTestSuite) TestACME() {
+	tlsConfig, err := ACME(context.TODO(), ACMEConfig{
+		Email: "geoffrey.ragot@gmail.com",
+		Url: "https://acme-staging.api.letsencrypt.org/directory",
+		Domain: "gfyrag.me",
+	})
+	if err != nil {
+		s.FailNow(err.Error())
+	}
+	srv := httptest.NewServer(&Proxy{
+		ConnectHandler: &SSLBump{
+			Config: tlsConfig,
 		},
 	})
 	defer srv.Close()
