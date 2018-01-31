@@ -7,8 +7,13 @@ import (
 	"net/http"
 	"net/url"
 	"crypto/tls"
-	"golang.org/x/net/context"
+	"github.com/Sirupsen/logrus"
+	"context"
 )
+
+func init() {
+	logrus.SetLevel(logrus.DebugLevel)
+}
 
 type HTTPProxyTestSuite struct {
 	suite.Suite
@@ -21,6 +26,7 @@ type HTTPProxyTestSuite struct {
 
 func (s *HTTPProxyTestSuite) SetupTest() {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "max-age=120")
 		w.WriteHeader(http.StatusNoContent)
 	})
 	s.proxy = &Proxy{}
@@ -97,6 +103,15 @@ func (s *HTTPProxyTestSuite) TestACMEHTTPSBump() {
 	s.Equal(http.StatusNoContent, rsp.StatusCode)
 }
 
-func TestHTTPProxy(t *testing.T) {
+func (s *HTTPProxyTestSuite) TestCache() {
+	rsp, err := s.client.Get(s.httpBackend.URL)
+	s.NoError(err)
+	s.NotNil(rsp)
+	s.Equal(http.StatusNoContent, rsp.StatusCode)
+	_, err = s.proxy.Cache.Storage.Get("GET:" + s.httpBackend.URL + "/")
+	s.NoError(err)
+}
+
+func TestProxy(t *testing.T) {
 	suite.Run(t, &HTTPProxyTestSuite{})
 }

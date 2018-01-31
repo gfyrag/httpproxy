@@ -9,89 +9,95 @@ import (
 	"bufio"
 	"fmt"
 	"github.com/Sirupsen/logrus"
+	"sync"
 )
 
 type ConnectHandler interface {
-	Serve(net.Conn, *Request) error
+	Serve(*Request) error
 }
-type ConnectHandlerFn func(net.Conn, *Request) error
+type ConnectHandlerFn func(*Request) error
 
-func (fn ConnectHandlerFn) Serve(w net.Conn, r *Request) error {
-	return fn(w, r)
+func (fn ConnectHandlerFn) Serve(r *Request) error {
+	return fn(r)
 }
 
-var DefaultConnectHandler ConnectHandlerFn = func(remote net.Conn, request *Request) error {
-	go io.Copy(remote, request.clientConn)
-	io.Copy(request.clientConn, remote)
+var DefaultConnectHandler ConnectHandlerFn = func(request *Request) error {
+	request.dialRemote()
+	go io.Copy(request.remoteConn, request.clientConn)
+	io.Copy(request.clientConn, request.remoteConn)
 	return nil
 }
 
-type ResponseHandler interface {
-	Accept(*http.Request, *http.Response)
-}
-type ResponseHandlerFn func(*http.Request, *http.Response)
+type ResponseHandlerFn func(*http.Request, *http.Response) error
 
-func (fn ResponseHandlerFn) Serve(req *http.Request, rsp *http.Response) {
-	fn(req, rsp)
+func (fn ResponseHandlerFn) Serve(req *http.Request, rsp *http.Response) error {
+	return fn(req, rsp)
 }
 
 type SSLBump struct {
 	Config *tls.Config
 }
 
-func (b *SSLBump) Serve(w net.Conn, r *Request) error {
+func (b *SSLBump) Serve(r *Request) error {
 	r.clientConn = tls.Server(r.clientConn, b.Config)
 
 	req, err := http.ReadRequest(bufio.NewReader(r.clientConn))
 	if err != nil {
 		return err
 	}
-
-	client := tls.Client(w, b.Config)
-
-	req.Host = r.Host
-	err = req.Write(client)
-	if err != nil {
-		return err
-	}
-
-	rsp, err := http.ReadResponse(bufio.NewReader(client), req)
-	if err != nil {
-		return err
-	}
-
-	return r.handleResponse(rsp)
+	r.dialRemote()
+	r.remoteConn = tls.Client(r.remoteConn, b.Config)
+	return r.handleRequest(req)
 }
 
 type Request struct {
 	*http.Request
+	once sync.Once
 	clientConn     net.Conn
 	remoteConn     net.Conn
 	connectHandler ConnectHandler
-	responseHandler ResponseHandler
+	cache          *Cache
 }
 
-func (r *Request) handleResponse(rsp *http.Response) error {
-	defer func() {
-		if r.responseHandler != nil {
-			r.responseHandler.Accept(r.Request, rsp)
+func (r *Request) dialRemote() (err error) {
+	r.once.Do(func() {
+		address := r.URL.Host
+		if r.URL.Port() == "" {
+			address += ":80"
 		}
-	}()
-	return rsp.Write(r.clientConn)
+
+		r.remoteConn, err = net.DialTimeout("tcp", address, 10 * time.Second)
+	})
+	return err
 }
 
-func (r *Request) handleRequest() error {
+func (r *Request) handleRequest(req *http.Request) error {
 
-	err := r.Request.Write(r.remoteConn)
+	resp, err := r.cache.Request(req)
 	if err != nil {
-		return err
-	}
+		if err != ErrCacheMiss {
+			return err
+		}
+		r.dialRemote()
 
-	resp, err := http.ReadResponse(bufio.NewReader(r.remoteConn), r.Request)
-	if err != nil {
-		return err
+		err := req.Write(r.remoteConn)
+		if err != nil {
+			return err
+		}
+
+		resp, err := http.ReadResponse(bufio.NewReader(r.remoteConn), req)
+		if err != nil {
+			return err
+		}
+
+		err = r.cache.Accept(req, resp)
+		if err != nil {
+			return err
+		}
+		return resp.Write(r.clientConn)
+	} else {
+		return resp.Write(r.clientConn)
 	}
-	return resp.Write(r.clientConn)
 }
 
 func (r *Request) writeStatusLine(status int, text string) error {
@@ -106,36 +112,26 @@ func (r *Request) handleTunneling() error {
 	}
 
 	if r.connectHandler != nil {
-		return r.connectHandler.Serve(r.remoteConn, r)
+		return r.connectHandler.Serve(r)
 	} else {
-		return DefaultConnectHandler(r.remoteConn, r)
+		return DefaultConnectHandler(r)
 	}
 }
 
 func (r *Request) Serve() {
-	address := r.URL.Host
-	if r.URL.Port() == "" {
-		address += ":80"
-	}
-
-	var err error
-	r.remoteConn, err = net.DialTimeout("tcp", address, 10 * time.Second)
-	if err != nil {
-		err := r.writeStatusLine(http.StatusServiceUnavailable, err.Error())
-		if err != nil {
-			panic(err)
+	defer func() {
+		if r.remoteConn != nil {
+			r.remoteConn.Close()
 		}
-		return
-	}
-	defer r.remoteConn.Close()
-
+	}()
+	var err error
 	if r.Method == http.MethodConnect {
 		err = r.handleTunneling()
 	} else {
-		err = r.handleRequest()
+		err = r.handleRequest(r.Request)
 	}
 	if err != nil {
-		if e := err.(*net.OpError); e.Err.Error() == "tls: bad certificate" {
+		if e, ok := err.(*net.OpError); ok && e.Err.Error() == "tls: bad certificate" {
 			logrus.Error(e)
 		} else {
 			err = r.writeStatusLine(http.StatusServiceUnavailable, err.Error())
@@ -148,10 +144,14 @@ func (r *Request) Serve() {
 
 type Proxy struct {
 	ConnectHandler ConnectHandler
-	ResponseHandler ResponseHandler
+	Cache          *Cache
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+
+	if p.Cache == nil {
+		p.Cache = &Cache{}
+	}
 
 	hi, ok := w.(http.Hijacker)
 	if !ok {
@@ -169,7 +169,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		clientConn: clientConn,
 		Request: r,
 		connectHandler: p.ConnectHandler,
-		responseHandler: p.ResponseHandler,
+		cache: p.Cache,
 	}
 	req.Serve()
 }
