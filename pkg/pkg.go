@@ -26,6 +26,15 @@ var DefaultConnectHandler ConnectHandlerFn = func(remote net.Conn, request *Requ
 	return nil
 }
 
+type ResponseHandler interface {
+	Accept(*http.Request, *http.Response)
+}
+type ResponseHandlerFn func(*http.Request, *http.Response)
+
+func (fn ResponseHandlerFn) Serve(req *http.Request, rsp *http.Response) {
+	fn(req, rsp)
+}
+
 type SSLBump struct {
 	Config *tls.Config
 }
@@ -51,7 +60,7 @@ func (b *SSLBump) Serve(w net.Conn, r *Request) error {
 		return err
 	}
 
-	return rsp.Write(r.clientConn)
+	return r.handleResponse(rsp)
 }
 
 type Request struct {
@@ -59,6 +68,16 @@ type Request struct {
 	clientConn     net.Conn
 	remoteConn     net.Conn
 	connectHandler ConnectHandler
+	responseHandler ResponseHandler
+}
+
+func (r *Request) handleResponse(rsp *http.Response) error {
+	defer func() {
+		if r.responseHandler != nil {
+			r.responseHandler.Accept(r.Request, rsp)
+		}
+	}()
+	return rsp.Write(r.clientConn)
 }
 
 func (r *Request) handleRequest() error {
@@ -129,6 +148,7 @@ func (r *Request) Serve() {
 
 type Proxy struct {
 	ConnectHandler ConnectHandler
+	ResponseHandler ResponseHandler
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -149,6 +169,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		clientConn: clientConn,
 		Request: r,
 		connectHandler: p.ConnectHandler,
+		responseHandler: p.ResponseHandler,
 	}
 	req.Serve()
 }
