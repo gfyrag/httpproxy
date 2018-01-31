@@ -12,91 +12,72 @@ import (
 
 type HTTPProxyTestSuite struct {
 	suite.Suite
+	srv         *httptest.Server
+	client      *http.Client
+	proxy       *Proxy
+	httpBackend *httptest.Server
+	httpsBackend *httptest.Server
+}
+
+func (s *HTTPProxyTestSuite) SetupTest() {
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	s.proxy = &Proxy{}
+	s.httpBackend = httptest.NewServer(h)
+	s.httpsBackend = httptest.NewTLSServer(h)
+	s.srv = httptest.NewServer(s.proxy)
+	proxyUrl, err := url.Parse(s.srv.URL)
+	if err != nil {
+		s.FailNow(err.Error())
+	}
+	s.client = &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyUrl),
+			DisableCompression: true,
+			TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+		},
+	}
+}
+
+func (s *HTTPProxyTestSuite) TearDownTest() {
+	s.srv.Close()
+	s.httpsBackend.Close()
+	s.httpBackend.Close()
 }
 
 func (s *HTTPProxyTestSuite) TestHTTP() {
-	srv := httptest.NewServer(&Proxy{})
-	defer srv.Close()
-
-	proxyUrl, err := url.Parse(srv.URL)
-	s.NoError(err)
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyUrl),
-			DisableCompression: true,
-		},
-	}
-	req, err := http.NewRequest("GET", "http://google.fr", nil)
-	s.NoError(err)
-
-	rsp, err := client.Do(req)
+	rsp, err := s.client.Get(s.httpBackend.URL)
 	s.NoError(err)
 	s.NotNil(rsp)
-	s.Equal(http.StatusMovedPermanently, rsp.StatusCode)
+	s.Equal(http.StatusNoContent, rsp.StatusCode)
 }
 
 func (s *HTTPProxyTestSuite) TestHTTPS() {
-	srv := httptest.NewServer(&Proxy{})
-	defer srv.Close()
-
-	proxyUrl, err := url.Parse(srv.URL)
-	s.NoError(err)
-
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyUrl),
-			DisableCompression: true,
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-			},
-			TLSNextProto:    make(map[string]func(string, *tls.Conn) http.RoundTripper),
-		},
-	}
-
-	rsp, err := client.Get("https://google.fr")
+	rsp, err := s.client.Get(s.httpsBackend.URL)
 	s.NoError(err)
 	s.NotNil(rsp)
-	s.Equal(http.StatusMovedPermanently, rsp.StatusCode)
+	s.Equal(http.StatusNoContent, rsp.StatusCode)
 }
 
 func (s *HTTPProxyTestSuite) TestHTTPSBump() {
-	srv := httptest.NewServer(&Proxy{
-		ConnectHandler: &SSLBump{
-			Config: DefaultTLSConfig(),
-		},
-	})
-	defer srv.Close()
-
-	proxyUrl, err := url.Parse(srv.URL)
-	s.NoError(err)
-
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyUrl),
-			DisableCompression: true,
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-			},
-			TLSNextProto:    make(map[string]func(string, *tls.Conn) http.RoundTripper),
-		},
+	s.proxy.ConnectHandler = &SSLBump{
+		Config: DefaultTLSConfig(),
 	}
 
-	rsp, err := client.Get("https://google.fr")
+	rsp, err := s.client.Get(s.httpsBackend.URL)
 	s.NoError(err)
 	s.NotNil(rsp)
-	s.Equal(http.StatusMovedPermanently, rsp.StatusCode)
+	s.Equal(http.StatusNoContent, rsp.StatusCode)
 }
 
-func (s *HTTPProxyTestSuite) TestACME() {
+func (s *HTTPProxyTestSuite) TestACMEHTTPSBump() {
 	tlsConfig, err := ACME(context.TODO(), ACMEConfig{
 		Email: "geoffrey.ragot@gmail.com",
 		Url: "https://acme-staging.api.letsencrypt.org/directory",
@@ -105,34 +86,15 @@ func (s *HTTPProxyTestSuite) TestACME() {
 	if err != nil {
 		s.FailNow(err.Error())
 	}
-	srv := httptest.NewServer(&Proxy{
-		ConnectHandler: &SSLBump{
-			Config: tlsConfig,
-		},
-	})
-	defer srv.Close()
 
-	proxyUrl, err := url.Parse(srv.URL)
-	s.NoError(err)
-
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyUrl),
-			DisableCompression: true,
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-			},
-			TLSNextProto:    make(map[string]func(string, *tls.Conn) http.RoundTripper),
-		},
+	s.proxy.ConnectHandler = &SSLBump{
+		Config: tlsConfig,
 	}
 
-	rsp, err := client.Get("https://google.fr")
+	rsp, err := s.client.Get(s.httpsBackend.URL)
 	s.NoError(err)
 	s.NotNil(rsp)
-	s.Equal(http.StatusMovedPermanently, rsp.StatusCode)
+	s.Equal(http.StatusNoContent, rsp.StatusCode)
 }
 
 func TestHTTPProxy(t *testing.T) {
