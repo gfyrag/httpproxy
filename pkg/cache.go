@@ -193,6 +193,21 @@ func (c *Cache) Evict(req *http.Request) {
 	c.Storage.Delete(c.id(req))
 }
 
+func (c *Cache) IsCacheable(rsp *http.Response, req *http.Request) bool {
+	reasons, expires, err := cachecontrol.CachableResponse(req, rsp, cachecontrol.Options{})
+	if err != nil {
+		return false
+	}
+
+	if len(reasons) > 0 {
+		return false
+	}
+	if expires.IsZero() {
+		return false
+	}
+	return true
+}
+
 func (c *Cache) Accept(req *http.Request, rsp *http.Response) (time.Time, error) {
 	c.init()
 
@@ -210,19 +225,6 @@ func (c *Cache) Accept(req *http.Request, rsp *http.Response) (time.Time, error)
 		logrus.Debugf("No expiration date")
 		return time.Time{}, nil
 	}
-
-	// To store the response, we will need to read the down stream
-	data, err := ioutil.ReadAll(rsp.Body)
-	if err != nil {
-		return time.Time{}, err
-	}
-	rsp.Body.Close()
-
-	rsp.Body = ioutil.NopCloser(bytes.NewBuffer(data))
-	defer func() {
-		// Make the response look like before the call
-		rsp.Body = ioutil.NopCloser(bytes.NewBuffer(data))
-	}()
 
 	return expires, c.Storage.Put(c.id(req), req, rsp, expires)
 }

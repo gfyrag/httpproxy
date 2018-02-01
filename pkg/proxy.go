@@ -12,6 +12,7 @@ import (
 	"sync"
 	"github.com/pborman/uuid"
 	"net/http/httputil"
+	"github.com/gfyrag/go-container-factory/old/golang/usr/local/go/src/io/ioutil"
 )
 
 type ConnectHandler interface {
@@ -111,22 +112,66 @@ func (r *Request) handleRequest(req *http.Request) error {
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		// Store the original body as we need to replace the existing one by a blocking reader
+		respBody := resp.Body
+		defer respBody.Close()
 
 		if r.logger.Logger.Level >= logrus.DebugLevel {
 			data, _ := httputil.DumpResponse(resp, false)
 			r.logger.Logger.Writer().Write(data)
 		}
 
-		expires, err = r.proxy.Cache.Accept(req, resp)
-		if err != nil {
-			fmt.Println("error while caching")
-			return err
-		}
-		if expires.IsZero() {
-			r.logger.Debugf("not cacheable response")
-		} else {
-			r.logger.Debugf("cache response, will expires at %s", expires)
+		if r.proxy.Cache.IsCacheable(resp, req) {
+			// Replace the original resp.Body with a blocking reader
+			// This way we can let resp.Write method write the response to the client and control the downstream reading
+			clientResponseWriter := &blockingReadWriter{}
+			resp.Body = ioutil.NopCloser(clientResponseWriter)
+
+			// Start responding to client on another routine
+			// Let us read the downstream at the same time
+			writeError := make(chan error)
+			go func() {
+				writeError <- resp.Write(r.clientConn)
+			}()
+
+			cachedReponse := new(http.Response)
+			*cachedReponse = *resp
+			cachedResponseWriter := &blockingReadWriter{}
+			cachedReponse.Body = ioutil.NopCloser(cachedResponseWriter)
+			go func() {
+				expires, err = r.proxy.Cache.Accept(req, cachedReponse)
+				if err != nil {
+					r.logger.Error("error while caching response: %s", err)
+				}
+				r.logger.Debugf("cache response, will expires at %s", expires)
+			}()
+
+			// Read the downstream data, and write to underlying blocking reader and on a cache buffer
+			for {
+				data := make([]byte, 1024)
+				n, err := respBody.Read(data)
+				if n > 0 {
+					_, err = cachedResponseWriter.Write(data[:n])
+					if err != nil {
+						return err
+					}
+					_, err = clientResponseWriter.Write(data[:n])
+					if err != nil {
+						return err
+					}
+				}
+				if err != nil {
+					if err != io.EOF {
+						return err
+					} else {
+						cachedResponseWriter.Close()
+						clientResponseWriter.Close()
+						break
+					}
+				}
+			}
+
+			return <-writeError
 		}
 		return resp.Write(r.clientConn)
 	}
@@ -227,4 +272,38 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		logger: logger,
 	}
 	req.Serve()
+}
+
+type blockingReadWriter struct {
+	sync.Mutex
+	data chan []byte
+}
+
+func (r *blockingReadWriter) init() {
+	r.Lock()
+	defer r.Unlock()
+	if r.data == nil {
+		r.data = make(chan []byte)
+	}
+}
+
+func (r *blockingReadWriter) Close() error {
+	r.init()
+	close(r.data)
+	return nil
+}
+
+func (r *blockingReadWriter) Write(p []byte) (n int, err error) {
+	r.init()
+	r.data <- p
+	return len(p), nil
+}
+
+func (r *blockingReadWriter) Read(p []byte) (n int, err error) {
+	r.init()
+	d, ok := <- r.data
+	if !ok {
+		return 0, io.EOF
+	}
+	return copy(p, d), nil
 }
