@@ -81,12 +81,7 @@ func (r *Request) dialRemote() (err error) {
 
 func (r *Request) handleRequest(req *http.Request) error {
 
-	if r.logger.Logger.Level >= logrus.DebugLevel {
-		data, _ := httputil.DumpRequest(req, false)
-		r.logger.Logger.Writer().Write(data)
-	}
-
-	resp, at, expires, err := r.proxy.Cache.Request(req)
+	cachedResponse, at, expires, err := r.proxy.Cache.Request(req)
 
 	if err != nil && err != ErrCacheMiss {
 		return err
@@ -95,6 +90,16 @@ func (r *Request) handleRequest(req *http.Request) error {
 	if err == nil && time.Now().After(expires) {
 		r.logger.Debugf("find cached response but expired at %s", expires)
 		r.proxy.Cache.Evict(req)
+		etags := cachedResponse.Header.Get("ETags")
+		if etags != "" {
+			r.logger.Debugf("found etags header in previous response")
+			req.Header.Set("If-None-Match", etags)
+		}
+	}
+
+	if r.logger.Logger.Level >= logrus.DebugLevel {
+		data, _ := httputil.DumpRequest(req, false)
+		r.logger.Logger.Writer().Write(data)
 	}
 
 	if err == ErrCacheMiss || time.Now().After(expires) {
@@ -112,6 +117,29 @@ func (r *Request) handleRequest(req *http.Request) error {
 		if err != nil {
 			return err
 		}
+
+		if resp.StatusCode == http.StatusNotModified {
+			if r.logger.Logger.Level >= logrus.DebugLevel {
+				data, _ := httputil.DumpResponse(resp, false)
+				r.logger.Logger.Writer().Write(data)
+			}
+			resp.Body.Close()
+			r.logger.Debugf("remote return not modified status, use previously cached response")
+			if resp.Header.Get("Date") != "" {
+				cachedResponse.Header.Set("Date", resp.Header.Get("Date"))
+			}
+			if resp.Header.Get("Cache-Control") != "" {
+				cachedResponse.Header.Set("Cache-Control", resp.Header.Get("Cache-Control"))
+			}
+			if resp.Header.Get("Expires") != "" {
+				cachedResponse.Header.Set("Expires", resp.Header.Get("Expires"))
+			}
+			if resp.Header.Get("ETags") != "" {
+				cachedResponse.Header.Set("ETags", resp.Header.Get("ETags"))
+			}
+			resp = cachedResponse
+		}
+
 		// Store the original body as we need to replace the existing one by a blocking reader
 		respBody := resp.Body
 		defer respBody.Close()
@@ -123,8 +151,8 @@ func (r *Request) handleRequest(req *http.Request) error {
 
 		if r.proxy.Cache.IsCacheable(resp, req) {
 
-			// Replace the original resp.Body with a blocking reader
-			// This way we can let resp.Write method write the response to the client and control the downstream reading
+			// Replace the original cachedResponse.Body with a blocking reader
+			// This way we can let cachedResponse.Write method write the response to the client and control the downstream reading
 			clientResponseWriter := &blockingReadWriter{}
 			resp.Body = ioutil.NopCloser(clientResponseWriter)
 
@@ -178,8 +206,8 @@ func (r *Request) handleRequest(req *http.Request) error {
 	}
 
 	r.logger.Debugf("serve cached response, will expires at %s", expires)
-	resp.Header.Set("Age", fmt.Sprintf("%d", int(time.Now().Sub(at).Seconds())))
-	return resp.Write(r.clientConn)
+	cachedResponse.Header.Set("Age", fmt.Sprintf("%d", int(time.Now().Sub(at).Seconds())))
+	return cachedResponse.Write(r.clientConn)
 }
 
 func (r *Request) writeStatusLine(status int, text string) error {
