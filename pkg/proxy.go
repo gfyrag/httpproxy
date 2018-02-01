@@ -12,7 +12,7 @@ import (
 	"sync"
 	"github.com/pborman/uuid"
 	"net/http/httputil"
-	"github.com/gfyrag/go-container-factory/old/golang/usr/local/go/src/io/ioutil"
+	"io/ioutil"
 )
 
 type ConnectHandler interface {
@@ -122,6 +122,7 @@ func (r *Request) handleRequest(req *http.Request) error {
 		}
 
 		if r.proxy.Cache.IsCacheable(resp, req) {
+
 			// Replace the original resp.Body with a blocking reader
 			// This way we can let resp.Write method write the response to the client and control the downstream reading
 			clientResponseWriter := &blockingReadWriter{}
@@ -276,34 +277,47 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 type blockingReadWriter struct {
 	sync.Mutex
-	data chan []byte
+	data []byte
+	closed bool
 }
 
 func (r *blockingReadWriter) init() {
-	r.Lock()
-	defer r.Unlock()
 	if r.data == nil {
-		r.data = make(chan []byte)
+		r.data = make([]byte, 0)
 	}
 }
 
 func (r *blockingReadWriter) Close() error {
-	r.init()
-	close(r.data)
+	r.Lock()
+	defer r.Unlock()
+	r.closed = true
 	return nil
 }
 
-func (r *blockingReadWriter) Write(p []byte) (n int, err error) {
-	r.init()
-	r.data <- p
+func (r *blockingReadWriter) Write(p []byte) (int, error) {
+	r.Lock()
+	defer r.Unlock()
+	if r.closed {
+		return 0, io.EOF
+	}
+	r.data = append(r.data, p...)
 	return len(p), nil
 }
 
-func (r *blockingReadWriter) Read(p []byte) (n int, err error) {
+func (r *blockingReadWriter) Read(p []byte) (int, error) {
+	r.Lock()
+	defer r.Unlock()
 	r.init()
-	d, ok := <- r.data
-	if !ok {
+	if len(r.data) > 0 {
+		l := copy(p, r.data)
+		r.data = r.data[l:]
+		if len(r.data) == 0 && r.closed {
+			return l, io.EOF
+		}
+		return l, nil
+	}
+	if r.closed {
 		return 0, io.EOF
 	}
-	return copy(p, d), nil
+	return 0, nil
 }
