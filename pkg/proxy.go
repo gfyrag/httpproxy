@@ -11,6 +11,7 @@ import (
 	"github.com/Sirupsen/logrus"
 	"sync"
 	"github.com/pborman/uuid"
+	"net/http/httputil"
 )
 
 type ConnectHandler interface {
@@ -79,6 +80,11 @@ func (r *Request) dialRemote() (err error) {
 
 func (r *Request) handleRequest(req *http.Request) error {
 
+	if r.logger.Logger.Level >= logrus.DebugLevel {
+		data, _ := httputil.DumpRequest(req, false)
+		r.logger.Logger.Writer().Write(data)
+	}
+
 	resp, at, expires, err := r.proxy.Cache.Request(req)
 
 	if err != nil && err != ErrCacheMiss {
@@ -106,6 +112,11 @@ func (r *Request) handleRequest(req *http.Request) error {
 			return err
 		}
 		defer resp.Body.Close()
+
+		if r.logger.Logger.Level >= logrus.DebugLevel {
+			data, _ := httputil.DumpResponse(resp, false)
+			r.logger.Logger.Writer().Write(data)
+		}
 
 		expires, err = r.proxy.Cache.Accept(req, resp)
 		if err != nil {

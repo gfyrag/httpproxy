@@ -9,6 +9,8 @@ import (
 	"github.com/gfyrag/httpproxy/pkg"
 	"net/http"
 	"github.com/Sirupsen/logrus"
+	"github.com/pquerna/cachecontrol"
+	"github.com/pquerna/cachecontrol/cacheobject"
 )
 
 var RootCmd = &cobra.Command{
@@ -18,6 +20,7 @@ var RootCmd = &cobra.Command{
 		logger := logrus.New()
 		if viper.GetBool("debug") {
 			logger.Level = logrus.DebugLevel
+			cacheobject.
 		}
 		logger.Infoln("Proxy started.")
 		http.ListenAndServe(":3128", &httpproxy.Proxy{
