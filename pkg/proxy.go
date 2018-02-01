@@ -120,6 +120,7 @@ func (r *Request) handleRequest(req *http.Request) error {
 
 		expires, err = r.proxy.Cache.Accept(req, resp)
 		if err != nil {
+			fmt.Println("error while caching")
 			return err
 		}
 		if expires.IsZero() {

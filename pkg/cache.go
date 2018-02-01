@@ -13,6 +13,10 @@ import (
 	"time"
 	"io/ioutil"
 	"bytes"
+	"path/filepath"
+	"os"
+	"bufio"
+	"encoding/base64"
 )
 
 var (
@@ -21,7 +25,7 @@ var (
 
 type CacheStorage interface {
 	Get(string) (*http.Response, time.Time, time.Time, error)
-	Put(string, *http.Response, time.Time) error
+	Put(string, *http.Request, *http.Response, time.Time) error
 	Delete(string)
 }
 
@@ -55,7 +59,7 @@ func (s *inmemoryCacheStorage) Get(id string) (*http.Response, time.Time, time.T
 	return entry.rsp, entry.at, entry.expires, nil
 }
 
-func (s *inmemoryCacheStorage) Put(id string, rsp *http.Response, expires time.Time) error {
+func (s *inmemoryCacheStorage) Put(id string, req *http.Request, rsp *http.Response, expires time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.init()
@@ -64,8 +68,6 @@ func (s *inmemoryCacheStorage) Put(id string, rsp *http.Response, expires time.T
 	if err != nil {
 		return err
 	}
-	rsp.Body.Close()
-	rsp.Body = ioutil.NopCloser(bytes.NewBuffer(data))
 
 	s.responses[id] = cacheEntry{
 		rsp: rsp,
@@ -83,13 +85,94 @@ func (s *inmemoryCacheStorage) Delete(id string) {
 	delete(s.responses, id)
 }
 
+type Dir string
+func (s Dir) path(id string) string {
+	return filepath.Join(string(s), base64.StdEncoding.EncodeToString([]byte(id)))
+}
+func (s Dir) Get(id string) (*http.Response, time.Time, time.Time, error) {
+	f, err := os.Open(s.path(id))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, time.Time{}, time.Time{}, ErrCacheMiss
+		}
+		return nil, time.Time{}, time.Time{}, err
+	}
+	defer f.Close()
+
+	reader := bufio.NewReader(f)
+
+	expiresBytes := make([]byte, 15)
+	_, err = reader.Read(expiresBytes)
+	if err != nil {
+		return nil, time.Time{}, time.Time{}, err
+	}
+
+	expires := time.Time{}
+	err = expires.UnmarshalBinary(expiresBytes)
+	if err != nil {
+		return nil, time.Time{}, time.Time{}, err
+	}
+
+	requestData, err := reader.ReadBytes(0)
+	if err != nil {
+		return nil, time.Time{}, time.Time{}, err
+	}
+
+	req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(requestData)))
+	if err != nil {
+		return nil, time.Time{}, time.Time{}, err
+	}
+
+	resp, err := http.ReadResponse(reader, req)
+	if err != nil {
+		return nil, time.Time{}, time.Time{}, err
+	}
+	stat, err := f.Stat()
+	if err != nil {
+		return nil, time.Time{}, time.Time{}, err
+	}
+	at := stat.ModTime()
+	return resp, at, expires, nil
+}
+
+func (s Dir) Put(id string, req *http.Request, rsp *http.Response, expires time.Time) error {
+	f, err := os.OpenFile(s.path(id), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	expiresBytes, err := expires.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(expiresBytes)
+	if err != nil {
+		return err
+	}
+	err = req.Write(f)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write([]byte{0})
+	if err != nil {
+		return err
+	}
+	return rsp.Write(f)
+}
+
+func (s Dir) Delete(id string) {
+	path := filepath.Join(string(s), base64.StdEncoding.EncodeToString([]byte(id)))
+	os.Remove(path)
+}
+
 type Cache struct {
 	mu sync.Mutex
 	Storage CacheStorage
 }
 
 func (c *Cache) id(req *http.Request) string {
-	return fmt.Sprintf("%s:%s", req.Method, req.URL.String())
+	return fmt.Sprintf("%s:%s", req.Method, req.URL.Path)
 }
 
 func (c *Cache) init() {
@@ -127,7 +210,21 @@ func (c *Cache) Accept(req *http.Request, rsp *http.Response) (time.Time, error)
 		logrus.Debugf("No expiration date")
 		return time.Time{}, nil
 	}
-	return expires, c.Storage.Put(c.id(req), rsp, expires)
+
+	// To store the response, we will need to read the down stream
+	data, err := ioutil.ReadAll(rsp.Body)
+	if err != nil {
+		return time.Time{}, err
+	}
+	rsp.Body.Close()
+
+	rsp.Body = ioutil.NopCloser(bytes.NewBuffer(data))
+	defer func() {
+		// Make the response look like before the call
+		rsp.Body = ioutil.NopCloser(bytes.NewBuffer(data))
+	}()
+
+	return expires, c.Storage.Put(c.id(req), req, rsp, expires)
 }
 
 
