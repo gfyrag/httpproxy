@@ -30,14 +30,14 @@ type CacheStorage interface {
 }
 
 type cacheEntry struct {
-	rsp *http.Response
-	at  time.Time
+	rsp     *http.Response
+	at      time.Time
 	expires time.Time
-	data []byte
+	data    []byte
 }
 
 type inmemoryCacheStorage struct {
-	mu sync.Mutex
+	mu        sync.Mutex
 	responses map[string]cacheEntry
 }
 
@@ -70,10 +70,10 @@ func (s *inmemoryCacheStorage) Put(id string, req *http.Request, rsp *http.Respo
 	}
 
 	s.responses[id] = cacheEntry{
-		rsp: rsp,
-		at: time.Now(),
+		rsp:     rsp,
+		at:      time.Now(),
 		expires: expires,
-		data: data,
+		data:    data,
 	}
 	return nil
 }
@@ -86,6 +86,7 @@ func (s *inmemoryCacheStorage) Delete(id string) {
 }
 
 type Dir string
+
 func (s Dir) path(id string) string {
 	return filepath.Join(string(s), base64.StdEncoding.EncodeToString([]byte(id)))
 }
@@ -167,12 +168,14 @@ func (s Dir) Delete(id string) {
 }
 
 type Cache struct {
-	mu sync.Mutex
+	mu      sync.Mutex
 	Storage CacheStorage
 }
 
 func (c *Cache) id(req *http.Request) string {
-	return fmt.Sprintf("%s:%s", req.Method, req.URL.Path)
+	return base64.StdEncoding.EncodeToString(
+		[]byte(fmt.Sprintf("%s:%s:%s:%s", req.URL.Scheme, req.URL.Host, req.Method, req.URL.Path)),
+	)
 }
 
 func (c *Cache) init() {
@@ -228,5 +231,3 @@ func (c *Cache) Accept(req *http.Request, rsp *http.Response) (time.Time, error)
 
 	return expires, c.Storage.Put(c.id(req), req, rsp, expires)
 }
-
-

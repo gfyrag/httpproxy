@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"crypto/tls"
 	"github.com/Sirupsen/logrus"
-	"context"
 	"time"
 )
 
@@ -23,13 +22,21 @@ type HTTPProxyTestSuite struct {
 	proxy       *Proxy
 	httpBackend *httptest.Server
 	httpsBackend *httptest.Server
+	rspHeaders http.Header
+	rspStatus int
 }
 
 func (s *HTTPProxyTestSuite) SetupTest() {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "max-age=2")
-		w.WriteHeader(http.StatusNoContent)
+		for k, h := range s.rspHeaders {
+			for _, sh := range h {
+				w.Header().Add(k, sh)
+			}
+		}
+		w.WriteHeader(s.rspStatus)
 	})
+	s.rspHeaders = http.Header{}
+	s.rspStatus = http.StatusOK
 	s.proxy = &Proxy{}
 	s.httpBackend = httptest.NewServer(h)
 	s.httpsBackend = httptest.NewTLSServer(h)
@@ -63,14 +70,14 @@ func (s *HTTPProxyTestSuite) TestHTTP() {
 	rsp, err := s.client.Get(s.httpBackend.URL)
 	s.NoError(err)
 	s.NotNil(rsp)
-	s.Equal(http.StatusNoContent, rsp.StatusCode)
+	s.Equal(http.StatusOK, rsp.StatusCode)
 }
 
 func (s *HTTPProxyTestSuite) TestHTTPS() {
 	rsp, err := s.client.Get(s.httpsBackend.URL)
 	s.NoError(err)
 	s.NotNil(rsp)
-	s.Equal(http.StatusNoContent, rsp.StatusCode)
+	s.Equal(http.StatusOK, rsp.StatusCode)
 }
 
 func (s *HTTPProxyTestSuite) TestHTTPSBump() {
@@ -81,9 +88,10 @@ func (s *HTTPProxyTestSuite) TestHTTPSBump() {
 	rsp, err := s.client.Get(s.httpsBackend.URL)
 	s.NoError(err)
 	s.NotNil(rsp)
-	s.Equal(http.StatusNoContent, rsp.StatusCode)
+	s.Equal(http.StatusOK, rsp.StatusCode)
 }
 
+/*
 func (s *HTTPProxyTestSuite) TestACMEHTTPSBump() {
 	tlsConfig, err := ACME(context.TODO(), ACMEConfig{
 		Email: "geoffrey.ragot@gmail.com",
@@ -101,21 +109,27 @@ func (s *HTTPProxyTestSuite) TestACMEHTTPSBump() {
 	rsp, err := s.client.Get(s.httpsBackend.URL)
 	s.NoError(err)
 	s.NotNil(rsp)
-	s.Equal(http.StatusNoContent, rsp.StatusCode)
+	s.Equal(http.StatusOK, rsp.StatusCode)
 }
+*/
 
 func (s *HTTPProxyTestSuite) TestCache() {
-	rsp, err := s.client.Get(s.httpBackend.URL)
+	s.rspHeaders.Add("Cache-Control", "max-age=2")
+
+	req, err := http.NewRequest("GET", s.httpBackend.URL + "/", nil)
+	s.NoError(err)
+
+	rsp, err := s.client.Do(req)
 	s.NoError(err)
 	s.NotNil(rsp)
-	s.Equal(http.StatusNoContent, rsp.StatusCode)
-	_, _, _, err = s.proxy.Cache.Storage.Get("GET:" + s.httpBackend.URL + "/")
+	s.Equal(http.StatusOK, rsp.StatusCode)
+	_, _, _, err = s.proxy.Cache.Request(req)
 	s.NoError(err)
 
 	rsp, err = s.client.Get(s.httpBackend.URL)
 	s.NoError(err)
 	s.NotNil(rsp)
-	s.Equal(http.StatusNoContent, rsp.StatusCode)
+	s.Equal(http.StatusOK, rsp.StatusCode)
 	s.NotEmpty(rsp.Header.Get("Age"))
 
 	<-time.After(2*time.Second)
@@ -123,7 +137,7 @@ func (s *HTTPProxyTestSuite) TestCache() {
 	rsp, err = s.client.Get(s.httpBackend.URL)
 	s.NoError(err)
 	s.NotNil(rsp)
-	s.Equal(http.StatusNoContent, rsp.StatusCode)
+	s.Equal(http.StatusOK, rsp.StatusCode)
 	s.Empty(rsp.Header.Get("Age"))
 }
 

@@ -244,7 +244,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.Cache = &Cache{}
 	}
 	if p.Logger == nil {
-		p.Logger = logrus.New()
+		p.Logger = logrus.StandardLogger()
 	}
 	if p.ConnectHandler == nil {
 		p.ConnectHandler = DefaultConnectHandler
