@@ -37,6 +37,7 @@ var RootCmd = &cobra.Command{
 			Cache: &httpproxy.Cache{
 				Storage: store,
 			},
+			BufferSize: viper.GetInt("buffer-size"),
 		})
 	},
 }
@@ -51,6 +52,7 @@ func Execute() {
 func init() {
 	cobra.OnInitialize(initConfig)
 	RootCmd.Flags().Bool("debug", false, "Debug mode")
+	RootCmd.Flags().Int("buffer-size", 1024, "Internal buffer size for requests")
 	RootCmd.Flags().String("store", "memory", "Store type")
 	RootCmd.Flags().String("store-path", "/tmp", "Store path for 'dir' store type")
 	RootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")

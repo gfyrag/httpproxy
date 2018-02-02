@@ -70,6 +70,7 @@ type Request struct {
 	remoteConn net.Conn
 	logger     *logrus.Entry
 	dialer     dialer
+	bufferSize int
 }
 
 func (r *Request) dialRemote() (err error) {
@@ -149,7 +150,7 @@ func (r *Request) responseAndCache(rsp *http.Response, req *http.Request) error 
 	}()
 
 	for {
-		data := make([]byte, 1024)
+		data := make([]byte, r.bufferSize)
 		n, err := rsp.Body.Read(data)
 		if n > 0 {
 			_, err = forCacheWriter.Write(data[:n])
@@ -280,6 +281,7 @@ type Proxy struct {
 	ConnectHandler ConnectHandler
 	Cache          *Cache
 	Logger         *logrus.Logger
+	BufferSize int
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -292,6 +294,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.ConnectHandler == nil {
 		p.ConnectHandler = DefaultConnectHandler
+	}
+	if p.BufferSize == 0 {
+		p.BufferSize = 1024
 	}
 
 	id := uuid.New()
@@ -315,6 +320,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		clientConn: clientConn,
 		Request: r,
 		logger: logger,
+		bufferSize: p.BufferSize,
 	}
 	req.Serve()
 }
