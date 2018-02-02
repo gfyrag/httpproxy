@@ -35,7 +35,7 @@ func TestDir(t *testing.T) {
 	d := Cache{
 		Storage: Dir("/tmp"),
 	}
-	_, err = d.Accept(req, rsp)
+	_, err = d.Accept(rsp, req)
 	assert.NoError(t, err)
 
 	rsp, _, err = d.Request(req)

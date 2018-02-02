@@ -35,7 +35,7 @@ func (s *HTTPProxyTestSuite) SetupTest() {
 			}
 		}
 		if r.Header.Get("If-None-Match") != "" {
-			if r.Header.Get("If-None-Match") == s.rspHeaders.Get("Etags") {
+			if r.Header.Get("If-None-Match") == s.rspHeaders.Get("Etag") {
 				w.WriteHeader(http.StatusNotModified)
 			}
 		}
@@ -146,7 +146,7 @@ func (s *HTTPProxyTestSuite) TestCache() {
 
 func (s *HTTPProxyTestSuite) TestETags() {
 	s.rspHeaders.Set("Cache-Control", "max-age=1")
-	s.rspHeaders.Set("ETags", "0000")
+	s.rspHeaders.Set("ETag", "0000")
 
 	req, err := http.NewRequest("GET", s.httpBackend.URL + "/", nil)
 	s.NoError(err)
@@ -159,14 +159,12 @@ func (s *HTTPProxyTestSuite) TestETags() {
 	s.NoError(err)
 
 	<-time.After(time.Second)
-	s.rspHeaders.Set("Cache-Control", "max-age=2")
 
 	rsp, err = s.client.Get(s.httpBackend.URL)
 	s.NoError(err)
 	s.NotNil(rsp)
 	s.Equal(http.StatusOK, rsp.StatusCode)
 	s.Empty(rsp.Header.Get("Age"))
-	s.Equal(s.rspHeaders.Get("Cache-Control"), rsp.Header.Get("Cache-Control"))
 }
 
 func TestProxy(t *testing.T) {
