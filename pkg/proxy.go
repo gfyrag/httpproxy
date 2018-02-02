@@ -81,14 +81,14 @@ func (r *Request) dialRemote() (err error) {
 
 func (r *Request) handleRequest(req *http.Request) error {
 
-	cachedResponse, at, expires, err := r.proxy.Cache.Request(req)
+	cachedResponse, meta, err := r.proxy.Cache.Request(req)
 
 	if err != nil && err != ErrCacheMiss {
 		return err
 	}
 
-	if err == nil && time.Now().After(expires) {
-		r.logger.Debugf("find cached response but expired at %s", expires)
+	if err == nil && time.Now().After(meta.Expires) {
+		r.logger.Debugf("find cached response but expired at %s", meta.Expires)
 		r.proxy.Cache.Evict(req)
 		etags := cachedResponse.Header.Get("ETags")
 		if etags != "" {
@@ -102,7 +102,7 @@ func (r *Request) handleRequest(req *http.Request) error {
 		r.logger.Logger.Writer().Write(data)
 	}
 
-	if err == ErrCacheMiss || time.Now().After(expires) {
+	if err == ErrCacheMiss || time.Now().After(meta.Expires) {
 		err = r.dialRemote()
 		if err != nil {
 			return err
@@ -168,11 +168,11 @@ func (r *Request) handleRequest(req *http.Request) error {
 			cachedResponseWriter := &blockingReadWriter{}
 			cachedReponse.Body = ioutil.NopCloser(cachedResponseWriter)
 			go func() {
-				expires, err = r.proxy.Cache.Accept(req, cachedReponse)
+				meta, err := r.proxy.Cache.Accept(req, cachedReponse)
 				if err != nil {
 					r.logger.Error("error while caching response: %s", err)
 				}
-				r.logger.Debugf("cache response, will expires at %s", expires)
+				r.logger.Debugf("cache response, will expires at %s", meta.Expires)
 			}()
 
 			// Read the downstream data, and write to underlying blocking reader and on a cache buffer
@@ -205,8 +205,8 @@ func (r *Request) handleRequest(req *http.Request) error {
 		return resp.Write(r.clientConn)
 	}
 
-	r.logger.Debugf("serve cached response, will expires at %s", expires)
-	cachedResponse.Header.Set("Age", fmt.Sprintf("%d", int(time.Now().Sub(at).Seconds())))
+	r.logger.Debugf("serve cached response, will expires at %s", meta.Expires)
+	cachedResponse.Header.Set("Age", fmt.Sprintf("%d", int(time.Now().Sub(meta.Date).Seconds())))
 	return cachedResponse.Write(r.clientConn)
 }
 

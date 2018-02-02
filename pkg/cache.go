@@ -17,23 +17,28 @@ import (
 	"os"
 	"bufio"
 	"encoding/base64"
+	"github.com/docker/go/canonical/json"
 )
 
 var (
 	ErrCacheMiss = errors.New("cache miss")
 )
 
+type CacheMetadata struct {
+	Date time.Time `json:"date"`
+	Expires time.Time `json:"expires"`
+}
+
 type CacheStorage interface {
-	Get(string) (*http.Response, time.Time, time.Time, error)
-	Put(string, *http.Request, *http.Response, time.Time) error
+	Get(string) (*http.Response, CacheMetadata, error)
+	Put(string, *http.Request, *http.Response, CacheMetadata) error
 	Delete(string)
 }
 
 type cacheEntry struct {
 	rsp     *http.Response
-	at      time.Time
-	expires time.Time
 	data    []byte
+	meta CacheMetadata
 }
 
 type inmemoryCacheStorage struct {
@@ -47,19 +52,19 @@ func (s *inmemoryCacheStorage) init() {
 	}
 }
 
-func (s *inmemoryCacheStorage) Get(id string) (*http.Response, time.Time, time.Time, error) {
+func (s *inmemoryCacheStorage) Get(id string) (*http.Response, CacheMetadata, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.init()
 	entry, ok := s.responses[id]
 	if !ok {
-		return nil, time.Time{}, time.Time{}, ErrCacheMiss
+		return nil, CacheMetadata{}, ErrCacheMiss
 	}
 	entry.rsp.Body = ioutil.NopCloser(bytes.NewBuffer(entry.data))
-	return entry.rsp, entry.at, entry.expires, nil
+	return entry.rsp, entry.meta, nil
 }
 
-func (s *inmemoryCacheStorage) Put(id string, req *http.Request, rsp *http.Response, expires time.Time) error {
+func (s *inmemoryCacheStorage) Put(id string, req *http.Request, rsp *http.Response, meta CacheMetadata) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.init()
@@ -71,8 +76,7 @@ func (s *inmemoryCacheStorage) Put(id string, req *http.Request, rsp *http.Respo
 
 	s.responses[id] = cacheEntry{
 		rsp:     rsp,
-		at:      time.Now(),
-		expires: expires,
+		meta: meta,
 		data:    data,
 	}
 	return nil
@@ -88,78 +92,94 @@ func (s *inmemoryCacheStorage) Delete(id string) {
 type Dir string
 
 func (s Dir) path(id string) string {
-	return filepath.Join(string(s), base64.StdEncoding.EncodeToString([]byte(id)))
+	p := ""
+	for i := 0 ; i < len(id); i += 4 {
+		p = filepath.Join(p, id[i:i+4])
+	}
+	return filepath.Join(string(s), p)
 }
-func (s Dir) Get(id string) (*http.Response, time.Time, time.Time, error) {
-	f, err := os.Open(s.path(id))
+func (s Dir) request(id string) string {
+	return filepath.Join(s.path(id), "req")
+}
+func (s Dir) response(id string) string {
+	return filepath.Join(s.path(id), "res")
+}
+func (s Dir) meta(id string) string {
+	return filepath.Join(s.path(id), "meta")
+}
+func (s Dir) Get(id string) (*http.Response, CacheMetadata, error) {
+	requestFile, err := os.Open(s.request(id))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, time.Time{}, time.Time{}, ErrCacheMiss
+			return nil, CacheMetadata{}, ErrCacheMiss
 		}
-		return nil, time.Time{}, time.Time{}, err
+		return nil, CacheMetadata{}, err
 	}
-	defer f.Close()
-
-	reader := bufio.NewReader(f)
-
-	expiresBytes := make([]byte, 15)
-	_, err = reader.Read(expiresBytes)
+	req, err := http.ReadRequest(bufio.NewReader(requestFile))
 	if err != nil {
-		return nil, time.Time{}, time.Time{}, err
+		return nil, CacheMetadata{}, err
 	}
 
-	expires := time.Time{}
-	err = expires.UnmarshalBinary(expiresBytes)
+	responseFile, err := os.Open(s.response(id))
 	if err != nil {
-		return nil, time.Time{}, time.Time{}, err
+		panic(err)
+	}
+	rsp, err := http.ReadResponse(bufio.NewReader(responseFile), req)
+	if err != nil {
+		return nil, CacheMetadata{}, err
 	}
 
-	requestData, err := reader.ReadBytes(0)
+	metaFile, err := os.Open(s.meta(id))
 	if err != nil {
-		return nil, time.Time{}, time.Time{}, err
+		panic(err)
+	}
+	meta := CacheMetadata{}
+	err = json.NewDecoder(bufio.NewReader(metaFile)).Decode(&meta)
+	if err != nil {
+		return nil, CacheMetadata{}, err
 	}
 
-	req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(requestData)))
-	if err != nil {
-		return nil, time.Time{}, time.Time{}, err
-	}
-
-	resp, err := http.ReadResponse(reader, req)
-	if err != nil {
-		return nil, time.Time{}, time.Time{}, err
-	}
-	stat, err := f.Stat()
-	if err != nil {
-		return nil, time.Time{}, time.Time{}, err
-	}
-	at := stat.ModTime()
-	return resp, at, expires, nil
+	return rsp, meta, nil
 }
 
-func (s Dir) Put(id string, req *http.Request, rsp *http.Response, expires time.Time) error {
-	f, err := os.OpenFile(s.path(id), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
+func (s Dir) Put(id string, req *http.Request, rsp *http.Response, meta CacheMetadata) error {
 
-	expiresBytes, err := expires.MarshalBinary()
+	path := s.path(id)
+	err := os.MkdirAll(path, 0777)
 	if err != nil {
 		return err
 	}
-	_, err = f.Write(expiresBytes)
+
+	requestFile, err := os.OpenFile(s.request(id), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
 		return err
 	}
-	err = req.Write(f)
+	defer requestFile.Close()
+	err = req.Write(requestFile)
 	if err != nil {
 		return err
 	}
-	_, err = f.Write([]byte{0})
+
+	responseFile, err := os.OpenFile(s.response(id), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
 		return err
 	}
-	return rsp.Write(f)
+	defer responseFile.Close()
+	err = rsp.Write(responseFile)
+	if err != nil {
+		return err
+	}
+
+	metaFile, err := os.OpenFile(s.meta(id), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+	if err != nil {
+		return err
+	}
+	defer metaFile.Close()
+	err = json.NewEncoder(metaFile).Encode(meta)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s Dir) Delete(id string) {
@@ -186,7 +206,7 @@ func (c *Cache) init() {
 	}
 }
 
-func (c *Cache) Request(req *http.Request) (*http.Response, time.Time, time.Time, error) {
+func (c *Cache) Request(req *http.Request) (*http.Response, CacheMetadata, error) {
 	c.init()
 	return c.Storage.Get(c.id(req))
 }
@@ -211,23 +231,26 @@ func (c *Cache) IsCacheable(rsp *http.Response, req *http.Request) bool {
 	return true
 }
 
-func (c *Cache) Accept(req *http.Request, rsp *http.Response) (time.Time, error) {
+func (c *Cache) Accept(req *http.Request, rsp *http.Response) (CacheMetadata, error) {
 	c.init()
 
 	reasons, expires, err := cachecontrol.CachableResponse(req, rsp, cachecontrol.Options{})
 	if err != nil {
-		return time.Time{}, err
+		return CacheMetadata{}, err
 	}
 
 	if len(reasons) > 0 {
 		logrus.Debugf("No caching because of: %s", reasons)
-		return time.Time{}, nil
+		return CacheMetadata{}, err
 	}
 	if expires.IsZero() {
-		// TODO: Use heuristic to make a choice
-		logrus.Debugf("No expiration date")
-		return time.Time{}, nil
+		return CacheMetadata{}, err
 	}
 
-	return expires, c.Storage.Put(c.id(req), req, rsp, expires)
+	meta := CacheMetadata{
+		Date: time.Now(),
+		Expires: expires,
+	}
+
+	return meta, c.Storage.Put(c.id(req), req, rsp, meta)
 }

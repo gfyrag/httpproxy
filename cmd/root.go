@@ -19,12 +19,24 @@ var RootCmd = &cobra.Command{
 		if viper.GetBool("debug") {
 			logger.Level = logrus.DebugLevel
 		}
+
+		var store httpproxy.CacheStorage
+		switch viper.GetString("store") {
+		case "memory":
+			// Default
+		case "dir":
+			store = httpproxy.Dir(viper.GetString("store-path"))
+		}
+
 		logger.Infoln("Proxy started.")
 		http.ListenAndServe(":3128", &httpproxy.Proxy{
 			ConnectHandler: &httpproxy.SSLBump{
 				Config: httpproxy.DefaultTLSConfig(),
 			},
 			Logger: logger,
+			Cache: &httpproxy.Cache{
+				Storage: store,
+			},
 		})
 	},
 }
@@ -39,6 +51,8 @@ func Execute() {
 func init() {
 	cobra.OnInitialize(initConfig)
 	RootCmd.Flags().Bool("debug", false, "Debug mode")
+	RootCmd.Flags().String("store", "memory", "Store type")
+	RootCmd.Flags().String("store-path", "/tmp", "Store path for 'dir' store type")
 	RootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 	viper.BindPFlags(RootCmd.Flags())
 }

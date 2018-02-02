@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"github.com/Sirupsen/logrus"
 	"time"
+	"context"
 )
 
 func init() {
@@ -95,7 +96,6 @@ func (s *HTTPProxyTestSuite) TestHTTPSBump() {
 	s.Equal(http.StatusOK, rsp.StatusCode)
 }
 
-/*
 func (s *HTTPProxyTestSuite) TestACMEHTTPSBump() {
 	tlsConfig, err := ACME(context.TODO(), ACMEConfig{
 		Email: "geoffrey.ragot@gmail.com",
@@ -114,7 +114,7 @@ func (s *HTTPProxyTestSuite) TestACMEHTTPSBump() {
 	s.NoError(err)
 	s.NotNil(rsp)
 	s.Equal(http.StatusOK, rsp.StatusCode)
-}*/
+}
 
 func (s *HTTPProxyTestSuite) TestCache() {
 	s.rspHeaders.Add("Cache-Control", "max-age=2")
@@ -126,7 +126,7 @@ func (s *HTTPProxyTestSuite) TestCache() {
 	s.NoError(err)
 	s.NotNil(rsp)
 	s.Equal(http.StatusOK, rsp.StatusCode)
-	_, _, _, err = s.proxy.Cache.Request(req)
+	_, _, err = s.proxy.Cache.Request(req)
 	s.NoError(err)
 
 	rsp, err = s.client.Get(s.httpBackend.URL)
@@ -155,7 +155,7 @@ func (s *HTTPProxyTestSuite) TestETags() {
 	s.NoError(err)
 	s.NotNil(rsp)
 	s.Equal(http.StatusOK, rsp.StatusCode)
-	_, _, _, err = s.proxy.Cache.Request(req)
+	_, _, err = s.proxy.Cache.Request(req)
 	s.NoError(err)
 
 	<-time.After(time.Second)
