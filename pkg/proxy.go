@@ -199,6 +199,8 @@ func (r *Request) handleRequest(req *http.Request) error {
 				cachedResponse.Body.Close()
 				if r.proxy.Cache.IsCacheable(rsp, req) {
 					return r.responseAndCache(rsp, req)
+				} else {
+					// TODO: Maybe remove from cache?
 				}
 			} else {
 				r.logger.Debugf("server respond with not modified content (304), update meta and respond with cached response")

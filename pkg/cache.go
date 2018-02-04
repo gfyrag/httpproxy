@@ -129,6 +129,7 @@ func (s Dir) UpdateMeta(id string, meta CacheMetadata) error {
 }
 
 func (s Dir) Get(id string, req *http.Request) (*http.Response, CacheMetadata, error) {
+
 	responseFile, err := os.Open(s.response(id))
 	if err != nil {
 		if os.IsNotExist(err) {

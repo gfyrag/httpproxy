@@ -28,10 +28,18 @@ var RootCmd = &cobra.Command{
 			store = httpproxy.Dir(viper.GetString("store-path"))
 		}
 
+		tlsConfig, err := httpproxy.RSA(httpproxy.RSAConfig{
+			Domain: viper.GetString("domain"),
+		})
+		if err != nil {
+			logger.Error(err)
+			os.Exit(1)
+		}
+
 		logger.Infoln("Proxy started.")
 		http.ListenAndServe(":3128", &httpproxy.Proxy{
 			ConnectHandler: &httpproxy.SSLBump{
-				Config: httpproxy.DefaultTLSConfig(),
+				Config: tlsConfig,
 			},
 			Logger: logger,
 			Cache: &httpproxy.Cache{
@@ -52,6 +60,7 @@ func Execute() {
 func init() {
 	cobra.OnInitialize(initConfig)
 	RootCmd.Flags().Bool("debug", false, "Debug mode")
+	RootCmd.Flags().String("domain", "", "Common name for generated certificates")
 	RootCmd.Flags().Int("buffer-size", 1024, "Internal buffer size for requests")
 	RootCmd.Flags().String("store", "memory", "Store type")
 	RootCmd.Flags().String("store-path", "/tmp", "Store path for 'dir' store type")

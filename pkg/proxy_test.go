@@ -10,10 +10,16 @@ import (
 	"github.com/Sirupsen/logrus"
 	"time"
 	"context"
+	"io/ioutil"
+	"io"
+)
+
+var (
+	data = make([]byte, 1024*1024*10)
 )
 
 func init() {
-	logrus.SetLevel(logrus.DebugLevel)
+	logrus.SetLevel(logrus.WarnLevel)
 }
 
 type HTTPProxyTestSuite struct {
@@ -86,8 +92,12 @@ func (s *HTTPProxyTestSuite) TestHTTPS() {
 }
 
 func (s *HTTPProxyTestSuite) TestHTTPSBump() {
+	tlsConfig, err := RSA(RSAConfig{
+		Domain: "example.net",
+	})
+	s.NoError(err)
 	s.proxy.ConnectHandler = &SSLBump{
-		Config: DefaultTLSConfig(),
+		Config: tlsConfig,
 	}
 
 	rsp, err := s.client.Get(s.httpsBackend.URL)
@@ -169,4 +179,177 @@ func (s *HTTPProxyTestSuite) TestETags() {
 
 func TestProxy(t *testing.T) {
 	suite.Run(t, &HTTPProxyTestSuite{})
+}
+
+func BenchmarkHTTPSpeed(b *testing.B) {
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(data) // 10MB
+	})
+	proxy := &Proxy{}
+	httpBackend := httptest.NewServer(h)
+	srv := httptest.NewServer(proxy)
+	proxyUrl, err := url.Parse(srv.URL)
+	if err != nil {
+		b.Error(err)
+	}
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyUrl),
+			TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+		},
+	}
+	req, err := http.NewRequest("GET", httpBackend.URL, nil)
+	if err != nil {
+		b.Error(err)
+	}
+
+	b.ResetTimer()
+	for i := 0 ; i < b.N ; i++ {
+		res, err := client.Do(req)
+		if err != nil {
+			b.Error(err)
+		}
+		_, err = io.Copy(ioutil.Discard, res.Body)
+		if err != nil {
+			b.Error(err)
+		}
+	}
+}
+
+func BenchmarkHTTPSForwardSpeed(b *testing.B) {
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(make([]byte, 1024*1024*10)) // 10MB
+	})
+	proxy := &Proxy{}
+	httpsBackend := httptest.NewTLSServer(h)
+	srv := httptest.NewServer(proxy)
+	proxyUrl, err := url.Parse(srv.URL)
+	if err != nil {
+		b.Error(err)
+	}
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyUrl),
+			TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+		},
+	}
+	req, err := http.NewRequest("GET", httpsBackend.URL, nil)
+	if err != nil {
+		b.Error(err)
+	}
+
+	b.ResetTimer()
+	for i := 0 ; i < b.N ; i++ {
+		res, err := client.Do(req)
+		if err != nil {
+			b.Error(err)
+		}
+		_, err = io.Copy(ioutil.Discard, res.Body)
+		if err != nil {
+			b.Error(err)
+		}
+	}
+}
+
+func BenchmarkHTTPSBumpRSASpeed(b *testing.B) {
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(make([]byte, 1024*1024*10)) // 10MB
+	})
+	tlsConfig, err := RSA(RSAConfig{
+		Domain: "example.net",
+	})
+	proxy := &Proxy{
+		ConnectHandler: &SSLBump{
+			Config: tlsConfig,
+		},
+	}
+	httpsBackend := httptest.NewTLSServer(h)
+	srv := httptest.NewServer(proxy)
+	proxyUrl, err := url.Parse(srv.URL)
+	if err != nil {
+		b.Error(err)
+	}
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyUrl),
+			TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+		},
+	}
+	req, err := http.NewRequest("GET", httpsBackend.URL, nil)
+	if err != nil {
+		b.Error(err)
+	}
+
+	b.ResetTimer()
+	for i := 0 ; i < b.N ; i++ {
+		res, err := client.Do(req)
+		if err != nil {
+			b.Error(err)
+		}
+		_, err = io.Copy(ioutil.Discard, res.Body)
+		if err != nil {
+			b.Error(err)
+		}
+	}
+}
+
+func BenchmarkHTTPSBumpECDSASpeed(b *testing.B) {
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(data) // 10MB
+	})
+
+	tlsConfig, err := ECDSA(ECDSAConfig{
+		Domain: "example.net",
+	})
+	if err != nil {
+		b.Error(err)
+		return
+	}
+	proxy := &Proxy{
+		ConnectHandler: &SSLBump{
+			Config: tlsConfig,
+		},
+		BufferSize: 1024*1024,
+	}
+	httpsBackend := httptest.NewTLSServer(h)
+	srv := httptest.NewServer(proxy)
+	proxyUrl, err := url.Parse(srv.URL)
+	if err != nil {
+		b.Error(err)
+	}
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyUrl),
+			TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+		},
+	}
+	req, err := http.NewRequest("GET", httpsBackend.URL, nil)
+	if err != nil {
+		b.Error(err)
+	}
+
+	b.ResetTimer()
+	for i := 0 ; i < b.N ; i++ {
+		res, err := client.Do(req)
+		if err != nil {
+			b.Error(err)
+			continue
+		}
+		_, err = io.Copy(ioutil.Discard, res.Body)
+		if err != nil {
+			b.Error(err)
+		}
+	}
 }
