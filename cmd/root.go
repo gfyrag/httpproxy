@@ -37,7 +37,7 @@ var RootCmd = &cobra.Command{
 		}
 
 		logger.Infoln("Proxy started.")
-		http.ListenAndServe(":3128", &httpproxy.Proxy{
+		err = http.ListenAndServe(":3128", &httpproxy.Proxy{
 			ConnectHandler: &httpproxy.SSLBump{
 				Config: tlsConfig,
 			},
@@ -47,6 +47,10 @@ var RootCmd = &cobra.Command{
 			},
 			BufferSize: viper.GetInt("buffer-size"),
 		})
+		if err != nil {
+			logger.Error(err)
+			os.Exit(1)
+		}
 	},
 }
 
