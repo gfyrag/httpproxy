@@ -54,7 +54,10 @@ func (b *SSLBump) Serve(r *Request) error {
 	}
 	originalDialer := r.dialer
 	r.dialer = func(ctx context.Context) error {
-		originalDialer(ctx)
+		err := originalDialer(ctx)
+		if err != nil {
+			return err
+		}
 		r.remoteConn = tls.Client(r.remoteConn, b.Config)
 		return nil
 	}

@@ -38,7 +38,7 @@ var RootCmd = &cobra.Command{
 		}
 
 		logger.Infoln("Proxy started.")
-		err = http.ListenAndServe(":3128", &httpproxy.Proxy{
+		err = http.ListenAndServe(fmt.Sprintf(":%d", viper.GetInt("port")), &httpproxy.Proxy{
 			ConnectHandler: &httpproxy.SSLBump{
 				Config: tlsConfig,
 			},
@@ -70,6 +70,7 @@ func init() {
 	RootCmd.Flags().Int("buffer-size", 1024, "Internal buffer size for requests")
 	RootCmd.Flags().String("store", "memory", "Store type")
 	RootCmd.Flags().String("store-path", "/tmp", "Store path for 'dir' store type")
+	RootCmd.Flags().Int("port", 3128, "Http port")
 	RootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 	viper.BindPFlags(RootCmd.Flags())
 }
