@@ -13,6 +13,7 @@ import (
 	"github.com/pborman/uuid"
 	"io/ioutil"
 	"net/http/httputil"
+	"context"
 )
 
 type ConnectHandler interface {
@@ -52,15 +53,15 @@ func (b *SSLBump) Serve(r *Request) error {
 		return err
 	}
 	originalDialer := r.dialer
-	r.dialer = func() error {
-		originalDialer()
+	r.dialer = func(ctx context.Context) error {
+		originalDialer(ctx)
 		r.remoteConn = tls.Client(r.remoteConn, b.Config)
 		return nil
 	}
 	return r.handleRequest(req)
 }
 
-type dialer func() error
+type dialer func(context.Context) error
 
 type Request struct {
 	*http.Request
@@ -72,11 +73,12 @@ type Request struct {
 	dialer     dialer
 	bufferSize int
 	connectError error
+	ctx context.Context
 }
 
 func (r *Request) dialRemote() error {
 	r.once.Do(func() {
-		r.connectError = r.dialer()
+		r.connectError = r.dialer(r.ctx)
 	})
 	return r.connectError
 }
@@ -244,20 +246,21 @@ func (r *Request) handleTunneling() error {
 	return r.proxy.ConnectHandler.Serve(r)
 }
 
-func (r *Request) Serve() {
+func (r *Request) Serve() error {
 	defer func() {
 		if r.remoteConn != nil {
 			r.remoteConn.Close()
 		}
 	}()
 
-	r.dialer = func() (err error) {
+	netDialer := net.Dialer{}
+	r.dialer = func(ctx context.Context) (err error) {
 		address := r.URL.Host
 		if r.URL.Port() == "" {
 			address += ":80"
 		}
 		r.logger.Debugf("dial remote %s", address)
-		r.remoteConn, err = net.Dial("tcp", address)
+		r.remoteConn, err = netDialer.DialContext(ctx, "tcp", address)
 		return err
 	}
 
@@ -268,16 +271,17 @@ func (r *Request) Serve() {
 		err = r.handleRequest(r.Request)
 	}
 	if err != nil {
-		r.proxy.Logger.Debugf("serve request error: %s", err)
 		if e, ok := err.(*net.OpError); ok && e.Err.Error() == "tls: bad certificate" {
+			return err
 			// Cannot respond since the tls handshake is unsuccessful
 		} else {
 			err = r.writeStatusLine(http.StatusServiceUnavailable, err.Error())
 			if err != nil {
-				r.proxy.Logger.Errorf("serve request error: %s", err)
+				return err
 			}
 		}
 	}
+	return nil
 }
 
 type Proxy struct {
@@ -285,6 +289,7 @@ type Proxy struct {
 	Cache          *Cache
 	Logger         *logrus.Logger
 	BufferSize int
+	ConnectTimeout time.Duration
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -318,14 +323,24 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer clientConn.Close()
 
+	ctx := context.Background()
+	if p.ConnectTimeout != 0 {
+		ctx, _ = context.WithDeadline(ctx, time.Now().Add(p.ConnectTimeout))
+	}
+
 	req := &Request{
 		proxy: p,
 		clientConn: clientConn,
 		Request: r,
 		logger: logger,
 		bufferSize: p.BufferSize,
+		ctx: ctx,
 	}
-	req.Serve()
+
+	err = req.Serve()
+	if err != nil {
+		p.Logger.Debugf("serve request error: %s", err)
+	}
 }
 
 type blockingReadWriter struct {

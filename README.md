@@ -9,3 +9,5 @@ Implements in memory caching of response with differents strategy :
 Implements smart request duplicate detection (No need to fetch to same resource multiple times)
 
 Implements stats http handler.
+
+Implements connect timeouts.

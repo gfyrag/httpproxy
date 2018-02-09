@@ -9,6 +9,7 @@ import (
 	"github.com/gfyrag/httpproxy/pkg"
 	"net/http"
 	"github.com/Sirupsen/logrus"
+	"time"
 )
 
 var RootCmd = &cobra.Command{
@@ -41,6 +42,7 @@ var RootCmd = &cobra.Command{
 			ConnectHandler: &httpproxy.SSLBump{
 				Config: tlsConfig,
 			},
+			ConnectTimeout: time.Duration(10*time.Second),
 			Logger: logger,
 			Cache: &httpproxy.Cache{
 				Storage: store,
