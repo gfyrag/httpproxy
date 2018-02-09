@@ -71,13 +71,14 @@ type Request struct {
 	logger     *logrus.Entry
 	dialer     dialer
 	bufferSize int
+	connectError error
 }
 
-func (r *Request) dialRemote() (err error) {
+func (r *Request) dialRemote() error {
 	r.once.Do(func() {
-		err = r.dialer()
+		r.connectError = r.dialer()
 	})
-	return err
+	return r.connectError
 }
 
 func (r *Request) doRequest(req *http.Request) (*http.Response, error) {
