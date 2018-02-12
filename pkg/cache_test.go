@@ -35,10 +35,16 @@ func TestDir(t *testing.T) {
 	d := Cache{
 		Storage: Dir("/tmp"),
 	}
-	_, err = d.Accept(rsp, req)
+	_, err = d.Initialize(rsp, req)
 	assert.NoError(t, err)
 
-	rsp, _, err = d.Request(req)
+	err = d.WriteResponse(rsp, req)
+	assert.NoError(t, err)
+
+	_, err = d.ReadMetadata(req)
+	assert.NoError(t, err)
+
+	rsp, err = d.ReadResponse(req)
 	assert.NoError(t, err)
 
 	data, err := ioutil.ReadAll(rsp.Body)

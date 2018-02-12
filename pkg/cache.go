@@ -35,10 +35,11 @@ func (m CacheMetadata) Expired() bool {
 }
 
 type CacheStorage interface {
-	Get(string, *http.Request) (*http.Response, CacheMetadata, error)
-	Put(string, *http.Response, CacheMetadata) error
-	Delete(string)
-	UpdateMeta(string, CacheMetadata) error
+	DeleteEntry(string)
+	ReadResponse(string, *http.Request) (*http.Response, error)
+	WriteResponse(string, *http.Response) error
+	ReadMetadata(string, *http.Request) (CacheMetadata, error)
+	Initialize(string, CacheMetadata) error
 }
 
 type cacheEntry struct {
@@ -58,19 +59,30 @@ func (s *inmemoryCacheStorage) init() {
 	}
 }
 
-func (s *inmemoryCacheStorage) Get(id string, req *http.Request) (*http.Response, CacheMetadata, error) {
+func (s *inmemoryCacheStorage) ReadResponse(id string, req *http.Request) (*http.Response, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.init()
 	entry, ok := s.responses[id]
 	if !ok {
-		return nil, CacheMetadata{}, ErrCacheMiss
+		return nil, ErrCacheMiss
 	}
 	entry.rsp.Body = ioutil.NopCloser(bytes.NewBuffer(entry.data))
-	return entry.rsp, entry.meta, nil
+	return entry.rsp, nil
 }
 
-func (s *inmemoryCacheStorage) Put(id string, rsp *http.Response, meta CacheMetadata) error {
+func (s *inmemoryCacheStorage) ReadMetadata(id string, req *http.Request) (CacheMetadata, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.init()
+	entry, ok := s.responses[id]
+	if !ok {
+		return CacheMetadata{}, ErrCacheMiss
+	}
+	return entry.meta, nil
+}
+
+func (s *inmemoryCacheStorage) WriteResponse(id string, rsp *http.Response) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.init()
@@ -80,27 +92,35 @@ func (s *inmemoryCacheStorage) Put(id string, rsp *http.Response, meta CacheMeta
 		return err
 	}
 
-	s.responses[id] = &cacheEntry{
-		rsp:     rsp,
-		meta: meta,
-		data:    data,
+	entry, ok := s.responses[id]
+	if !ok {
+		entry = &cacheEntry{}
+		s.responses[id] = entry
 	}
+	entry.rsp = rsp
+	entry.data = data
 	return nil
 }
 
-func (s *inmemoryCacheStorage) Delete(id string) {
+func (s *inmemoryCacheStorage) Initialize(id string, meta CacheMetadata) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.init()
+
+	entry, ok := s.responses[id]
+	if !ok {
+		entry = &cacheEntry{}
+		s.responses[id] = entry
+	}
+	entry.meta = meta
+	return nil
+}
+
+func (s *inmemoryCacheStorage) DeleteEntry(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.init()
 	delete(s.responses, id)
-}
-
-func (s *inmemoryCacheStorage) UpdateMeta(id string, meta CacheMetadata) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.init()
-	s.responses[id].meta = meta
-	return nil
 }
 
 type Dir string
@@ -119,64 +139,66 @@ func (s Dir) meta(id string) string {
 	return filepath.Join(s.path(id), "meta")
 }
 
-func (s Dir) UpdateMeta(id string, meta CacheMetadata) error {
-	metaFile, err := os.OpenFile(s.meta(id), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
-	if err != nil {
-		return err
-	}
-	defer metaFile.Close()
-	return json.NewEncoder(metaFile).Encode(meta)
-}
-
-func (s Dir) Get(id string, req *http.Request) (*http.Response, CacheMetadata, error) {
-
-	responseFile, err := os.Open(s.response(id))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, CacheMetadata{}, ErrCacheMiss
-		}
-		return nil, CacheMetadata{}, err
-	}
-	rsp, err := http.ReadResponse(bufio.NewReader(responseFile), req)
-	if err != nil {
-		return nil, CacheMetadata{}, err
-	}
+func (s Dir) ReadMetadata(id string, req *http.Request) (CacheMetadata, error) {
 
 	metaFile, err := os.Open(s.meta(id))
 	if err != nil {
-		panic(err)
+		if os.IsNotExist(err) {
+			return CacheMetadata{}, ErrCacheMiss
+		}
 	}
 	meta := CacheMetadata{}
 	err = json.NewDecoder(bufio.NewReader(metaFile)).Decode(&meta)
 	if err != nil {
-		return nil, CacheMetadata{}, err
+		return CacheMetadata{}, err
 	}
 
-	return rsp, meta, nil
+	return meta, nil
 }
 
-func (s Dir) Put(id string, rsp *http.Response, meta CacheMetadata) error {
+func (s Dir) ReadResponse(id string, req *http.Request) (*http.Response, error) {
+	responseFile, err := os.Open(s.response(id))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrCacheMiss
+		}
+		return nil, err
+	}
+	return http.ReadResponse(bufio.NewReader(responseFile), req)
+}
 
+func (s Dir) WriteResponse(id string, rsp *http.Response) error {
+	responseFile, err := os.OpenFile(s.response(id), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+	if err != nil {
+		return err
+	}
+	defer responseFile.Close()
+	return rsp.Write(responseFile)
+}
+
+func (s Dir) Initialize(id string, meta CacheMetadata) error {
 	path := s.path(id)
 	err := os.MkdirAll(path, 0777)
 	if err != nil {
 		return err
 	}
 
-	responseFile, err := os.OpenFile(s.response(id), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+	f, err := os.Create(s.response(id))
 	if err != nil {
 		return err
 	}
-	defer responseFile.Close()
-	err = rsp.Write(responseFile)
-	if err != nil {
-		return err
-	}
+	f.Close()
 
-	return s.UpdateMeta(id, meta)
+	metaFile, err := os.OpenFile(s.meta(id), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+	if err != nil {
+		return err
+	}
+	defer metaFile.Close()
+
+	return json.NewEncoder(metaFile).Encode(meta)
 }
 
-func (s Dir) Delete(id string) {
+func (s Dir) DeleteEntry(id string) {
 	os.RemoveAll(s.path(id))
 }
 
@@ -199,14 +221,9 @@ func (c *Cache) init() {
 	}
 }
 
-func (c *Cache) Request(req *http.Request) (*http.Response, CacheMetadata, error) {
-	c.init()
-	return c.Storage.Get(c.id(req), req)
-}
-
 func (c *Cache) Evict(req *http.Request) {
 	c.init()
-	c.Storage.Delete(c.id(req))
+	c.Storage.DeleteEntry(c.id(req))
 }
 
 func (c *Cache) IsCacheable(rsp *http.Response, req *http.Request) bool {
@@ -224,23 +241,22 @@ func (c *Cache) IsCacheable(rsp *http.Response, req *http.Request) bool {
 	return true
 }
 
-func (c *Cache) UpdateMeta(rsp *http.Response, req *http.Request) error {
-	reasons, expires, err := cachecontrol.CachableResponse(req, rsp, cachecontrol.Options{})
-	if err != nil {
-		return err
-	}
-
-	if len(reasons) > 0 || expires.IsZero() {
-		return ErrNotCachable
-	}
-
-	return c.Storage.UpdateMeta(c.id(req), CacheMetadata{
-		Date: time.Now(),
-		Expires: expires,
-	})
+func (c *Cache) ReadMetadata(req *http.Request) (CacheMetadata, error) {
+	c.init()
+	return c.Storage.ReadMetadata(c.id(req), req)
 }
 
-func (c *Cache) Accept(rsp *http.Response, req *http.Request) (CacheMetadata, error) {
+func (c *Cache) ReadResponse(req *http.Request) (*http.Response, error) {
+	c.init()
+	return c.Storage.ReadResponse(c.id(req), req)
+}
+
+func (c *Cache) WriteResponse(rsp *http.Response, req *http.Request) error {
+	c.init()
+	return c.Storage.WriteResponse(c.id(req), rsp)
+}
+
+func (c *Cache) Initialize(rsp *http.Response, req *http.Request) (CacheMetadata, error) {
 	c.init()
 
 	reasons, expires, err := cachecontrol.CachableResponse(req, rsp, cachecontrol.Options{})
@@ -261,5 +277,5 @@ func (c *Cache) Accept(rsp *http.Response, req *http.Request) (CacheMetadata, er
 		Expires: expires,
 	}
 
-	return meta, c.Storage.Put(c.id(req), rsp, meta)
+	return meta, c.Storage.Initialize(c.id(req), meta)
 }

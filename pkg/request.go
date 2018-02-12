@@ -98,9 +98,16 @@ func (r *Request) responseAndCache(rsp *http.Response, req *http.Request) error 
 		errCh <- forClientResponse.Write(r.clientConn)
 	}()
 	go func() {
-		meta, err := r.proxy.cache.Accept(forCacheResponse, req)
+		defer forCacheResponse.Body.Close()
+		meta, err := r.proxy.cache.Initialize(forCacheResponse, req)
+		if err != nil {
+			r.logger.Error("error while writing metadata: %s", err)
+			return
+		}
+		err = r.proxy.cache.WriteResponse(forCacheResponse, req)
 		if err != nil {
 			r.logger.Error("error while caching response: %s", err)
+			return
 		}
 		r.logger.Debugf("cache response, will expires at %s", meta.Expires)
 	}()
@@ -144,12 +151,16 @@ func (r *Request) handleRequest(req *http.Request) error {
 	var (
 		rsp *http.Response
 	)
-	cachedResponse, meta, err := r.proxy.cache.Request(req)
+	meta, err := r.proxy.cache.ReadMetadata(req)
 	if err != nil && err != ErrCacheMiss {
 		return err
 	}
 
 	if err == nil {
+		cachedResponse, err := r.proxy.cache.ReadResponse(req)
+		if err != nil {
+			panic(err)
+		}
 		if meta.Expired() {
 			r.logger.Debugf("found expired response in cache (%s)", meta.Expires)
 			var modified bool
@@ -167,7 +178,7 @@ func (r *Request) handleRequest(req *http.Request) error {
 				}
 			} else {
 				r.logger.Debugf("server respond with not modified content (304), update meta and respond with cached response")
-				r.proxy.cache.UpdateMeta(cachedResponse, req)
+				r.proxy.cache.Initialize(cachedResponse, req)
 				rsp = cachedResponse
 			}
 		} else {

@@ -152,7 +152,7 @@ func (s *HTTPProxyTestSuite) TestCache() {
 	s.NoError(err)
 	s.NotNil(rsp)
 	s.Equal(http.StatusOK, rsp.StatusCode)
-	_, _, err = s.proxy.cache.Request(req)
+	_, err = s.proxy.cache.ReadMetadata(req)
 	s.NoError(err)
 
 	rsp, err = s.client.Get(s.httpBackend.URL)
@@ -181,7 +181,7 @@ func (s *HTTPProxyTestSuite) TestETags() {
 	s.NoError(err)
 	s.NotNil(rsp)
 	s.Equal(http.StatusOK, rsp.StatusCode)
-	_, _, err = s.proxy.cache.Request(req)
+	_, err = s.proxy.cache.ReadMetadata(req)
 	s.NoError(err)
 
 	<-time.After(time.Second)
