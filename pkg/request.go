@@ -87,6 +87,7 @@ func (r *Request) handleRequest(req *http.Request) error {
 		r.logger.Info("terminated")
 	}()
 	r.tx.Start()
+	defer r.tx.Release()
 
 	var (
 		rsp *http.Response
@@ -121,6 +122,11 @@ func (r *Request) handleRequest(req *http.Request) error {
 			} else {
 				r.logger.Debugf("server respond with not modified content (304), update meta and respond with cached response")
 				rsp = cachedResponse
+				meta, err = r.tx.Prepare(rsp)
+				if err != nil {
+					r.logger.Error("error while writing metadata: %s", err)
+					return err
+				}
 			}
 		} else {
 			r.logger.Debugf("found fresh response in cache (%s), serve cached response", meta.Expires)
@@ -162,8 +168,6 @@ func (r *Request) handleRequest(req *http.Request) error {
 			}
 		}()
 	}
-
-	r.tx.Release()
 
 	return rsp.Write(r.clientConn)
 }

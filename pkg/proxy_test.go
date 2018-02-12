@@ -171,13 +171,13 @@ func TestETags(t *testing.T) {
 	_, err = proxy.cache.Tx(req).ReadMetadata()
 	assert.NoError(t, err)
 
-	<-time.After(time.Second)
+	<-time.After(2*time.Second)
 
 	rsp, err = client.Get(httpBackend.URL)
 	assert.NoError(t, err)
 	assert.NotNil(t, rsp)
 	assert.Equal(t, http.StatusOK, rsp.StatusCode)
-	assert.Empty(t, rsp.Header.Get("Age"))
+	assert.Equal(t, rsp.Header.Get("Age"), "0")
 }
 
 func TestWebSocket(t *testing.T) {

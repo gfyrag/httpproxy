@@ -38,6 +38,7 @@ type CacheStorage interface {
 	ReadResponse(string, *http.Request) (*http.Response, error)
 	WriteResponse(string, *http.Response) error
 	ReadMetadata(string, *http.Request) (CacheMetadata, error)
+	WriteMetadata(string, CacheMetadata) error
 	Prepare(string, CacheMetadata) error
 }
 
@@ -58,8 +59,6 @@ func (s *inmemoryCacheStorage) init() {
 }
 
 func (s *inmemoryCacheStorage) ReadResponse(id string, req *http.Request) (*http.Response, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.init()
 	entry, ok := s.responses[id]
 	if !ok {
@@ -70,8 +69,6 @@ func (s *inmemoryCacheStorage) ReadResponse(id string, req *http.Request) (*http
 }
 
 func (s *inmemoryCacheStorage) ReadMetadata(id string, req *http.Request) (CacheMetadata, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.init()
 	entry, ok := s.responses[id]
 	if !ok {
@@ -81,8 +78,6 @@ func (s *inmemoryCacheStorage) ReadMetadata(id string, req *http.Request) (Cache
 }
 
 func (s *inmemoryCacheStorage) WriteResponse(id string, rsp *http.Response) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.init()
 
 	entry, ok := s.responses[id]
@@ -94,9 +89,18 @@ func (s *inmemoryCacheStorage) WriteResponse(id string, rsp *http.Response) erro
 	return rsp.Write(entry.buf)
 }
 
+func (s *inmemoryCacheStorage) WriteMetadata(id string, meta CacheMetadata) error {
+	s.init()
+
+	entry, ok := s.responses[id]
+	if !ok {
+		panic("not prepared")
+	}
+	entry.meta = meta
+	return nil
+}
+
 func (s *inmemoryCacheStorage) Prepare(id string, meta CacheMetadata) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.init()
 
 	entry, ok := s.responses[id]
@@ -170,6 +174,16 @@ func (s Dir) WriteResponse(id string, rsp *http.Response) error {
 	return rsp.Write(responseFile)
 }
 
+func (s Dir) WriteMetadata(id string, meta CacheMetadata) error {
+	metaFile, err := os.OpenFile(s.meta(id), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+	if err != nil {
+		return err
+	}
+	defer metaFile.Close()
+
+	return json.NewEncoder(metaFile).Encode(meta)
+}
+
 func (s Dir) Prepare(id string, meta CacheMetadata) error {
 	path := s.path(id)
 	err := os.MkdirAll(path, 0777)
@@ -183,13 +197,7 @@ func (s Dir) Prepare(id string, meta CacheMetadata) error {
 	}
 	f.Close()
 
-	metaFile, err := os.OpenFile(s.meta(id), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
-	if err != nil {
-		return err
-	}
-	defer metaFile.Close()
-
-	return json.NewEncoder(metaFile).Encode(meta)
+	return nil
 }
 
 func (s Dir) DeleteEntry(id string) {
@@ -261,7 +269,12 @@ func (c *cacheTransaction) Prepare(rsp *http.Response) (CacheMetadata, error) {
 		Expires: expires,
 	}
 
-	return meta, c.cache.Storage.Prepare(c.id, meta)
+	err = c.cache.Storage.Prepare(c.id, meta)
+	if err != nil {
+		return CacheMetadata{}, err
+	}
+
+	return meta, c.cache.Storage.WriteMetadata(c.id, meta)
 }
 
 type Cache struct {
