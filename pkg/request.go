@@ -172,7 +172,7 @@ func (r *Request) handleRequest(req *http.Request) error {
 			}
 		} else {
 			r.logger.Debugf("found fresh response in cache (%s), serve cached response", meta.Expires)
-			rsp = r.completeCachedReponse(rsp, meta)
+			rsp = r.completeCachedReponse(cachedResponse, meta)
 		}
 	}
 

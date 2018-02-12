@@ -12,6 +12,8 @@ import (
 	"context"
 	"io/ioutil"
 	"io"
+	"strings"
+	"github.com/gorilla/websocket"
 )
 
 var (
@@ -19,7 +21,7 @@ var (
 )
 
 func init() {
-	logrus.SetLevel(logrus.WarnLevel)
+	logrus.SetLevel(logrus.DebugLevel)
 }
 
 type HTTPProxyTestSuite struct {
@@ -29,11 +31,15 @@ type HTTPProxyTestSuite struct {
 	proxy       *proxy
 	httpBackend *httptest.Server
 	httpsBackend *httptest.Server
+	wsBackend *httptest.Server
+	wssBackend *httptest.Server
 	rspHeaders http.Header
 	rspStatus int
+	proxyUrl *url.URL
 }
 
 func (s *HTTPProxyTestSuite) SetupTest() {
+	var err error
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for k, h := range s.rspHeaders {
 			for _, sh := range h {
@@ -46,13 +52,23 @@ func (s *HTTPProxyTestSuite) SetupTest() {
 			}
 		}
 	})
+	ws := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			panic(err)
+		}
+		conn.Close()
+	})
 	s.rspHeaders = http.Header{}
 	s.rspStatus = http.StatusOK
-	s.proxy = &proxy{}
+	s.proxy = Proxy()
 	s.httpBackend = httptest.NewServer(h)
 	s.httpsBackend = httptest.NewTLSServer(h)
+	s.wsBackend = httptest.NewServer(ws)
+	s.wssBackend = httptest.NewTLSServer(ws)
 	s.srv = httptest.NewServer(s.proxy)
-	proxyUrl, err := url.Parse(s.srv.URL)
+	s.proxyUrl, err = url.Parse(s.srv.URL)
 	if err != nil {
 		s.FailNow(err.Error())
 	}
@@ -61,7 +77,7 @@ func (s *HTTPProxyTestSuite) SetupTest() {
 			return http.ErrUseLastResponse
 		},
 		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyUrl),
+			Proxy: http.ProxyURL(s.proxyUrl),
 			DisableCompression: true,
 			TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
 			TLSClientConfig: &tls.Config{
@@ -176,6 +192,40 @@ func (s *HTTPProxyTestSuite) TestETags() {
 	s.Equal(http.StatusOK, rsp.StatusCode)
 	s.Empty(rsp.Header.Get("Age"))
 }
+
+func (s *HTTPProxyTestSuite) TestWebSocket() {
+	dialer := websocket.Dialer{
+		Proxy: func(*http.Request) (*url.URL, error) {
+			return s.proxyUrl, nil
+		},
+	}
+
+	_, _, err := dialer.Dial(strings.Replace(s.wsBackend.URL, "http", "ws", -1), nil)
+	s.NoError(err)
+}
+
+func (s *HTTPProxyTestSuite) TestSecuredWebSocket() {
+	dialer := websocket.Dialer{
+		Proxy: func(*http.Request) (*url.URL, error) {
+			return s.proxyUrl, nil
+		},
+		TLSClientConfig: &tls.Config{
+			RootCAs: s.wssBackend.TLS.RootCAs,
+			InsecureSkipVerify: true,
+		},
+	}
+	tlsConfig, err := RSA(RSAConfig{
+		Domain: "example.net",
+	})
+	s.NoError(err)
+	s.proxy.connectHandler = &SSLBump{
+		Config: tlsConfig,
+	}
+
+	_, _, err = dialer.Dial(strings.Replace(s.wssBackend.URL, "http", "ws", -1), nil)
+	s.NoError(err)
+}
+
 
 func TestProxy(t *testing.T) {
 	suite.Run(t, &HTTPProxyTestSuite{})

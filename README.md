@@ -8,3 +8,4 @@ TODO:
 * Http stats handler.
 * Specific config by path/host.
 * Improve logging.
+* Test streamed requests
