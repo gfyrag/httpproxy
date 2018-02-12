@@ -39,7 +39,7 @@ type CacheStorage interface {
 	WriteResponse(string, *http.Response) error
 	ReadMetadata(string, *http.Request) (CacheMetadata, error)
 	WriteMetadata(string, CacheMetadata) error
-	Prepare(string, CacheMetadata) error
+	Prepare(string) error
 }
 
 type cacheEntry struct {
@@ -100,7 +100,7 @@ func (s *inmemoryCacheStorage) WriteMetadata(id string, meta CacheMetadata) erro
 	return nil
 }
 
-func (s *inmemoryCacheStorage) Prepare(id string, meta CacheMetadata) error {
+func (s *inmemoryCacheStorage) Prepare(id string) error {
 	s.init()
 
 	entry, ok := s.responses[id]
@@ -110,13 +110,10 @@ func (s *inmemoryCacheStorage) Prepare(id string, meta CacheMetadata) error {
 		}
 		s.responses[id] = entry
 	}
-	entry.meta = meta
 	return nil
 }
 
 func (s *inmemoryCacheStorage) DeleteEntry(id string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.init()
 	delete(s.responses, id)
 }
@@ -166,7 +163,7 @@ func (s Dir) ReadResponse(id string, req *http.Request) (*http.Response, error) 
 }
 
 func (s Dir) WriteResponse(id string, rsp *http.Response) error {
-	responseFile, err := os.OpenFile(s.response(id), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+	responseFile, err := os.Create(s.response(id))
 	if err != nil {
 		return err
 	}
@@ -175,7 +172,7 @@ func (s Dir) WriteResponse(id string, rsp *http.Response) error {
 }
 
 func (s Dir) WriteMetadata(id string, meta CacheMetadata) error {
-	metaFile, err := os.OpenFile(s.meta(id), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+	metaFile, err := os.Create(s.meta(id))
 	if err != nil {
 		return err
 	}
@@ -184,14 +181,20 @@ func (s Dir) WriteMetadata(id string, meta CacheMetadata) error {
 	return json.NewEncoder(metaFile).Encode(meta)
 }
 
-func (s Dir) Prepare(id string, meta CacheMetadata) error {
+func (s Dir) Prepare(id string) error {
 	path := s.path(id)
 	err := os.MkdirAll(path, 0777)
 	if err != nil {
 		return err
 	}
 
-	f, err := os.Create(s.response(id))
+	f, err := os.Create(s.meta(id))
+	if err != nil {
+		return err
+	}
+	f.Close()
+
+	f, err = os.Create(s.response(id))
 	if err != nil {
 		return err
 	}
@@ -250,7 +253,7 @@ func (c *cacheTransaction) WriteResponse(rsp *http.Response) error {
 	return c.cache.Storage.WriteResponse(c.id, rsp)
 }
 
-func (c *cacheTransaction) Prepare(rsp *http.Response) (CacheMetadata, error) {
+func (c *cacheTransaction) Update(rsp *http.Response) (CacheMetadata, error) {
 	reasons, expires, err := cachecontrol.CachableResponse(c.req, rsp, cachecontrol.Options{})
 	if err != nil {
 		return CacheMetadata{}, err
@@ -269,12 +272,16 @@ func (c *cacheTransaction) Prepare(rsp *http.Response) (CacheMetadata, error) {
 		Expires: expires,
 	}
 
-	err = c.cache.Storage.Prepare(c.id, meta)
+	return meta, c.cache.Storage.WriteMetadata(c.id, meta)
+}
+
+func (c *cacheTransaction) Prepare(rsp *http.Response) (CacheMetadata, error) {
+	err := c.cache.Storage.Prepare(c.id)
 	if err != nil {
 		return CacheMetadata{}, err
 	}
 
-	return meta, c.cache.Storage.WriteMetadata(c.id, meta)
+	return c.Update(rsp)
 }
 
 type Cache struct {
