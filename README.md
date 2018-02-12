@@ -9,3 +9,4 @@ TODO:
 * Specific config by path/host.
 * Improve logging.
 * Test streamed requests
+* Errors on remote conn closed

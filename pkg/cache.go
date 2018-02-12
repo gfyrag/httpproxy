@@ -11,7 +11,6 @@ import (
 	"github.com/Sirupsen/logrus"
 	"fmt"
 	"time"
-	"io/ioutil"
 	"bytes"
 	"path/filepath"
 	"os"
@@ -39,12 +38,11 @@ type CacheStorage interface {
 	ReadResponse(string, *http.Request) (*http.Response, error)
 	WriteResponse(string, *http.Response) error
 	ReadMetadata(string, *http.Request) (CacheMetadata, error)
-	Initialize(string, CacheMetadata) error
+	Prepare(string, CacheMetadata) error
 }
 
 type cacheEntry struct {
-	rsp     *http.Response
-	data    []byte
+	buf *bytes.Buffer
 	meta CacheMetadata
 }
 
@@ -67,8 +65,8 @@ func (s *inmemoryCacheStorage) ReadResponse(id string, req *http.Request) (*http
 	if !ok {
 		return nil, ErrCacheMiss
 	}
-	entry.rsp.Body = ioutil.NopCloser(bytes.NewBuffer(entry.data))
-	return entry.rsp, nil
+
+	return http.ReadResponse(bufio.NewReader(bytes.NewBuffer(entry.buf.Bytes())), req)
 }
 
 func (s *inmemoryCacheStorage) ReadMetadata(id string, req *http.Request) (CacheMetadata, error) {
@@ -87,29 +85,25 @@ func (s *inmemoryCacheStorage) WriteResponse(id string, rsp *http.Response) erro
 	defer s.mu.Unlock()
 	s.init()
 
-	data, err := ioutil.ReadAll(rsp.Body)
-	if err != nil {
-		return err
-	}
-
 	entry, ok := s.responses[id]
 	if !ok {
-		entry = &cacheEntry{}
-		s.responses[id] = entry
+		panic("not prepared")
 	}
-	entry.rsp = rsp
-	entry.data = data
-	return nil
+	entry.buf.Reset()
+
+	return rsp.Write(entry.buf)
 }
 
-func (s *inmemoryCacheStorage) Initialize(id string, meta CacheMetadata) error {
+func (s *inmemoryCacheStorage) Prepare(id string, meta CacheMetadata) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.init()
 
 	entry, ok := s.responses[id]
 	if !ok {
-		entry = &cacheEntry{}
+		entry = &cacheEntry{
+			buf: bytes.NewBuffer(make([]byte, 0)),
+		}
 		s.responses[id] = entry
 	}
 	entry.meta = meta
@@ -176,7 +170,7 @@ func (s Dir) WriteResponse(id string, rsp *http.Response) error {
 	return rsp.Write(responseFile)
 }
 
-func (s Dir) Initialize(id string, meta CacheMetadata) error {
+func (s Dir) Prepare(id string, meta CacheMetadata) error {
 	path := s.path(id)
 	err := os.MkdirAll(path, 0777)
 	if err != nil {
@@ -202,32 +196,27 @@ func (s Dir) DeleteEntry(id string) {
 	os.RemoveAll(s.path(id))
 }
 
-type Cache struct {
-	mu      sync.Mutex
-	Storage CacheStorage
+type cacheTransaction struct {
+	mu    *sync.Mutex
+	id    string
+	cache *Cache
+	req *http.Request
 }
 
-func (c *Cache) id(req *http.Request) string {
-	return base64.StdEncoding.EncodeToString(
-		[]byte(fmt.Sprintf("%s:%s:%s:%s", req.URL.Scheme, req.URL.Host, req.Method, req.URL.Path)),
-	)
-}
-
-func (c *Cache) init() {
+func (c *cacheTransaction) Start() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.Storage == nil {
-		c.Storage = &inmemoryCacheStorage{}
-	}
 }
 
-func (c *Cache) Evict(req *http.Request) {
-	c.init()
-	c.Storage.DeleteEntry(c.id(req))
+func (c *cacheTransaction) Release() {
+	c.mu.Unlock()
 }
 
-func (c *Cache) IsCacheable(rsp *http.Response, req *http.Request) bool {
-	reasons, expires, err := cachecontrol.CachableResponse(req, rsp, cachecontrol.Options{})
+func (c *cacheTransaction) Evict() {
+	c.cache.Storage.DeleteEntry(c.id)
+}
+
+func (c *cacheTransaction) IsCacheable(rsp *http.Response) bool {
+	reasons, expires, err := cachecontrol.CachableResponse(c.req, rsp, cachecontrol.Options{})
 	if err != nil {
 		return false
 	}
@@ -241,25 +230,20 @@ func (c *Cache) IsCacheable(rsp *http.Response, req *http.Request) bool {
 	return true
 }
 
-func (c *Cache) ReadMetadata(req *http.Request) (CacheMetadata, error) {
-	c.init()
-	return c.Storage.ReadMetadata(c.id(req), req)
+func (c *cacheTransaction) ReadMetadata() (CacheMetadata, error) {
+	return c.cache.Storage.ReadMetadata(c.id, c.req)
 }
 
-func (c *Cache) ReadResponse(req *http.Request) (*http.Response, error) {
-	c.init()
-	return c.Storage.ReadResponse(c.id(req), req)
+func (c *cacheTransaction) ReadResponse() (*http.Response, error) {
+	return c.cache.Storage.ReadResponse(c.id, c.req)
 }
 
-func (c *Cache) WriteResponse(rsp *http.Response, req *http.Request) error {
-	c.init()
-	return c.Storage.WriteResponse(c.id(req), rsp)
+func (c *cacheTransaction) WriteResponse(rsp *http.Response) error {
+	return c.cache.Storage.WriteResponse(c.id, rsp)
 }
 
-func (c *Cache) Initialize(rsp *http.Response, req *http.Request) (CacheMetadata, error) {
-	c.init()
-
-	reasons, expires, err := cachecontrol.CachableResponse(req, rsp, cachecontrol.Options{})
+func (c *cacheTransaction) Prepare(rsp *http.Response) (CacheMetadata, error) {
+	reasons, expires, err := cachecontrol.CachableResponse(c.req, rsp, cachecontrol.Options{})
 	if err != nil {
 		return CacheMetadata{}, err
 	}
@@ -277,5 +261,36 @@ func (c *Cache) Initialize(rsp *http.Response, req *http.Request) (CacheMetadata
 		Expires: expires,
 	}
 
-	return meta, c.Storage.Initialize(c.id(req), meta)
+	return meta, c.cache.Storage.Prepare(c.id, meta)
 }
+
+type Cache struct {
+	mu      sync.Mutex
+	Storage CacheStorage
+	mutexes map[string]*sync.Mutex
+}
+
+func (c *Cache) Tx(req *http.Request) *cacheTransaction {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.mutexes == nil {
+		c.mutexes = make(map[string]*sync.Mutex)
+	}
+	if c.Storage == nil {
+		c.Storage = &inmemoryCacheStorage{}
+	}
+	id := base64.StdEncoding.EncodeToString(
+		[]byte(fmt.Sprintf("%s:%s:%s:%s", req.URL.Scheme, req.URL.Host, req.Method, req.URL.Path)),
+	)
+	if _, ok := c.mutexes[id]; !ok {
+		c.mutexes[id] = &sync.Mutex{}
+	}
+	return &cacheTransaction{
+		mu: c.mutexes[id],
+		id: id,
+		req: req,
+		cache: c,
+	}
+
+}
+

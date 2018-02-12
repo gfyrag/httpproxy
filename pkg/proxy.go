@@ -91,6 +91,7 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		logger: logger,
 		bufferSize: p.bufferSize,
 		ctx: ctx,
+		tx: p.cache.Tx(r),
 	}
 
 	err = req.Serve()

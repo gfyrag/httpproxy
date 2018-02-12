@@ -18,15 +18,16 @@ type dialer func(context.Context) error
 
 type Request struct {
 	*http.Request
-	proxy      *proxy
-	once       sync.Once
-	clientConn net.Conn
-	remoteConn net.Conn
-	logger     *logrus.Entry
-	dialer     dialer
-	bufferSize int
+	proxy        *proxy
+	once         sync.Once
+	clientConn   net.Conn
+	remoteConn   net.Conn
+	logger       *logrus.Entry
+	dialer       dialer
+	bufferSize   int
 	connectError error
-	ctx context.Context
+	ctx          context.Context
+	tx           *cacheTransaction
 }
 
 func (r *Request) dialRemote() error {
@@ -80,84 +81,30 @@ func (r *Request) checkModified(cachedResponse *http.Response, req *http.Request
 	return rsp, true, nil
 }
 
-func (r *Request) createBlockingResponse(rsp *http.Response) (*http.Response, *blockingReadWriter) {
-	cp := new(http.Response)
-	*cp = *rsp
-	cachedResponseWriter := &blockingReadWriter{}
-	cp.Body = ioutil.NopCloser(cachedResponseWriter)
-	return cp, cachedResponseWriter
-}
-
-func (r *Request) responseAndCache(rsp *http.Response, req *http.Request) error {
-	defer rsp.Body.Close()
-
-	forCacheResponse, forCacheWriter := r.createBlockingResponse(rsp)
-	forClientResponse, forClientWriter := r.createBlockingResponse(rsp)
-	errCh := make(chan error)
-	go func() {
-		errCh <- forClientResponse.Write(r.clientConn)
-	}()
-	go func() {
-		defer forCacheResponse.Body.Close()
-		meta, err := r.proxy.cache.Initialize(forCacheResponse, req)
-		if err != nil {
-			r.logger.Error("error while writing metadata: %s", err)
-			return
-		}
-		err = r.proxy.cache.WriteResponse(forCacheResponse, req)
-		if err != nil {
-			r.logger.Error("error while caching response: %s", err)
-			return
-		}
-		r.logger.Debugf("cache response, will expires at %s", meta.Expires)
-	}()
-
-	for {
-		data := make([]byte, r.bufferSize)
-		n, err := rsp.Body.Read(data)
-		if n > 0 {
-			_, err = forCacheWriter.Write(data[:n])
-			if err != nil {
-				return err
-			}
-			_, err = forClientWriter.Write(data[:n])
-			if err != nil {
-				return err
-			}
-		}
-		if err != nil {
-			if err != io.EOF {
-				return err
-			} else {
-				forCacheWriter.Close()
-				forClientWriter.Close()
-				break
-			}
-		}
-	}
-
-	return <- errCh
-}
-
-func (r *Request) completeCachedReponse(rsp *http.Response, meta CacheMetadata) *http.Response {
-	cp := new(http.Response)
-	*cp = *rsp
-	cp.Header.Set("Age", fmt.Sprintf("%d", int(time.Now().Sub(meta.Date).Seconds())))
-	return cp
-}
-
 func (r *Request) handleRequest(req *http.Request) error {
+
+	defer func() {
+		r.logger.Info("terminated")
+	}()
+	r.tx.Start()
 
 	var (
 		rsp *http.Response
+		cachedResponse *http.Response
 	)
-	meta, err := r.proxy.cache.ReadMetadata(req)
+	defer func() {
+		if rsp != nil {
+			rsp.Body.Close()
+		}
+	}()
+
+	meta, err := r.tx.ReadMetadata()
 	if err != nil && err != ErrCacheMiss {
 		return err
 	}
 
 	if err == nil {
-		cachedResponse, err := r.proxy.cache.ReadResponse(req)
+		cachedResponse, err = r.tx.ReadResponse()
 		if err != nil {
 			panic(err)
 		}
@@ -171,19 +118,13 @@ func (r *Request) handleRequest(req *http.Request) error {
 			if modified {
 				r.logger.Debugf("server respond with modified content, close the cached response and issue new request")
 				cachedResponse.Body.Close()
-				if r.proxy.cache.IsCacheable(rsp, req) {
-					return r.responseAndCache(rsp, req)
-				} else {
-					// TODO: Maybe remove from cache?
-				}
 			} else {
 				r.logger.Debugf("server respond with not modified content (304), update meta and respond with cached response")
-				r.proxy.cache.Initialize(cachedResponse, req)
 				rsp = cachedResponse
 			}
 		} else {
 			r.logger.Debugf("found fresh response in cache (%s), serve cached response", meta.Expires)
-			rsp = r.completeCachedReponse(cachedResponse, meta)
+			rsp = cachedResponse
 		}
 	}
 
@@ -193,12 +134,37 @@ func (r *Request) handleRequest(req *http.Request) error {
 		if err != nil {
 			return err
 		}
-		if r.proxy.cache.IsCacheable(rsp, req) {
-			return r.responseAndCache(rsp, req)
-		}
 	}
 
-	defer rsp.Body.Close()
+	if rsp == cachedResponse {
+		rsp.Header.Set("Age", fmt.Sprintf("%d", int(time.Now().Sub(meta.Date).Seconds())))
+	}
+
+	if rsp != cachedResponse && r.tx.IsCacheable(rsp) {
+		var w *io.PipeWriter
+		rspCp := new(http.Response)
+		*rspCp = *rsp
+		rspCp.Body, w = io.Pipe()
+		rsp.Body = ioutil.NopCloser(io.TeeReader(rsp.Body, w))
+		defer w.Close()
+
+		meta, err := r.tx.Prepare(rspCp)
+		if err != nil {
+			r.logger.Error("error while writing metadata: %s", err)
+			return err
+		}
+		r.logger.Debugf("cache response, will expires at %s", meta.Expires)
+		go func() {
+			err = r.tx.WriteResponse(rspCp)
+			if err != nil {
+				r.logger.Error("error while caching response: %s", err)
+				return
+			}
+		}()
+	}
+
+	r.tx.Release()
+
 	return rsp.Write(r.clientConn)
 }
 
@@ -241,6 +207,7 @@ func (r *Request) Serve() error {
 		err = r.handleRequest(r.Request)
 	}
 	if err != nil {
+		r.logger.Error(err)
 		if e, ok := err.(*net.OpError); ok && e.Err.Error() == "tls: bad certificate" {
 			return err
 			// Cannot respond since the tls handshake is unsuccessful
@@ -252,51 +219,4 @@ func (r *Request) Serve() error {
 		}
 	}
 	return nil
-}
-
-type blockingReadWriter struct {
-	sync.Mutex
-	data []byte
-	closed bool
-}
-
-func (r *blockingReadWriter) init() {
-	if r.data == nil {
-		r.data = make([]byte, 0)
-	}
-}
-
-func (r *blockingReadWriter) Close() error {
-	r.Lock()
-	defer r.Unlock()
-	r.closed = true
-	return nil
-}
-
-func (r *blockingReadWriter) Write(p []byte) (int, error) {
-	r.Lock()
-	defer r.Unlock()
-	if r.closed {
-		return 0, io.EOF
-	}
-	r.data = append(r.data, p...)
-	return len(p), nil
-}
-
-func (r *blockingReadWriter) Read(p []byte) (int, error) {
-	r.Lock()
-	defer r.Unlock()
-	r.init()
-	if len(r.data) > 0 {
-		l := copy(p, r.data)
-		r.data = r.data[l:]
-		if len(r.data) == 0 && r.closed {
-			return l, io.EOF
-		}
-		return l, nil
-	}
-	if r.closed {
-		return 0, io.EOF
-	}
-	return 0, nil
 }
