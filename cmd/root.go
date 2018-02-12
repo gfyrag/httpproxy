@@ -9,7 +9,6 @@ import (
 	"github.com/gfyrag/httpproxy/pkg"
 	"net/http"
 	"github.com/Sirupsen/logrus"
-	"time"
 )
 
 var RootCmd = &cobra.Command{
@@ -38,17 +37,16 @@ var RootCmd = &cobra.Command{
 		}
 
 		logger.Infoln("Proxy started.")
-		err = http.ListenAndServe(fmt.Sprintf(":%d", viper.GetInt("port")), &httpproxy.Proxy{
-			ConnectHandler: &httpproxy.SSLBump{
+		err = http.ListenAndServe(fmt.Sprintf(":%d", viper.GetInt("port")), httpproxy.Proxy(
+			httpproxy.WithConnectHandler(&httpproxy.SSLBump{
 				Config: tlsConfig,
-			},
-			ConnectTimeout: time.Duration(10*time.Second),
-			Logger: logger,
-			Cache: &httpproxy.Cache{
+			}),
+			httpproxy.WithLogger(logger),
+			httpproxy.WithCache(&httpproxy.Cache{
 				Storage: store,
-			},
-			BufferSize: viper.GetInt("buffer-size"),
-		})
+			}),
+			httpproxy.WithBufferSize(viper.GetInt("buffer-size")),
+		))
 		if err != nil {
 			logger.Error(err)
 			os.Exit(1)

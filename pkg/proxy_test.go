@@ -26,7 +26,7 @@ type HTTPProxyTestSuite struct {
 	suite.Suite
 	srv         *httptest.Server
 	client      *http.Client
-	proxy       *Proxy
+	proxy       *proxy
 	httpBackend *httptest.Server
 	httpsBackend *httptest.Server
 	rspHeaders http.Header
@@ -48,7 +48,7 @@ func (s *HTTPProxyTestSuite) SetupTest() {
 	})
 	s.rspHeaders = http.Header{}
 	s.rspStatus = http.StatusOK
-	s.proxy = &Proxy{}
+	s.proxy = &proxy{}
 	s.httpBackend = httptest.NewServer(h)
 	s.httpsBackend = httptest.NewTLSServer(h)
 	s.srv = httptest.NewServer(s.proxy)
@@ -96,7 +96,7 @@ func (s *HTTPProxyTestSuite) TestHTTPSBump() {
 		Domain: "example.net",
 	})
 	s.NoError(err)
-	s.proxy.ConnectHandler = &SSLBump{
+	s.proxy.connectHandler = &SSLBump{
 		Config: tlsConfig,
 	}
 
@@ -116,7 +116,7 @@ func (s *HTTPProxyTestSuite) TestACMEHTTPSBump() {
 		s.FailNow(err.Error())
 	}
 
-	s.proxy.ConnectHandler = &SSLBump{
+	s.proxy.connectHandler = &SSLBump{
 		Config: tlsConfig,
 	}
 
@@ -136,7 +136,7 @@ func (s *HTTPProxyTestSuite) TestCache() {
 	s.NoError(err)
 	s.NotNil(rsp)
 	s.Equal(http.StatusOK, rsp.StatusCode)
-	_, _, err = s.proxy.Cache.Request(req)
+	_, _, err = s.proxy.cache.Request(req)
 	s.NoError(err)
 
 	rsp, err = s.client.Get(s.httpBackend.URL)
@@ -165,7 +165,7 @@ func (s *HTTPProxyTestSuite) TestETags() {
 	s.NoError(err)
 	s.NotNil(rsp)
 	s.Equal(http.StatusOK, rsp.StatusCode)
-	_, _, err = s.proxy.Cache.Request(req)
+	_, _, err = s.proxy.cache.Request(req)
 	s.NoError(err)
 
 	<-time.After(time.Second)
@@ -185,7 +185,7 @@ func BenchmarkHTTPSpeed(b *testing.B) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(data) // 10MB
 	})
-	proxy := &Proxy{}
+	proxy := &proxy{}
 	httpBackend := httptest.NewServer(h)
 	srv := httptest.NewServer(proxy)
 	proxyUrl, err := url.Parse(srv.URL)
@@ -223,7 +223,7 @@ func BenchmarkHTTPSForwardSpeed(b *testing.B) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(make([]byte, 1024*1024*10)) // 10MB
 	})
-	proxy := &Proxy{}
+	proxy := &proxy{}
 	httpsBackend := httptest.NewTLSServer(h)
 	srv := httptest.NewServer(proxy)
 	proxyUrl, err := url.Parse(srv.URL)
@@ -264,8 +264,8 @@ func BenchmarkHTTPSBumpRSASpeed(b *testing.B) {
 	tlsConfig, err := RSA(RSAConfig{
 		Domain: "example.net",
 	})
-	proxy := &Proxy{
-		ConnectHandler: &SSLBump{
+	proxy := &proxy{
+		connectHandler: &SSLBump{
 			Config: tlsConfig,
 		},
 	}
@@ -314,11 +314,11 @@ func BenchmarkHTTPSBumpECDSASpeed(b *testing.B) {
 		b.Error(err)
 		return
 	}
-	proxy := &Proxy{
-		ConnectHandler: &SSLBump{
+	proxy := &proxy{
+		connectHandler: &SSLBump{
 			Config: tlsConfig,
 		},
-		BufferSize: 1024*1024,
+		bufferSize: 1024*1024,
 	}
 	httpsBackend := httptest.NewTLSServer(h)
 	srv := httptest.NewServer(proxy)
