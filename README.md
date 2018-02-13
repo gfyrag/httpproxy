@@ -10,3 +10,5 @@ TODO:
 * Improve logging.
 * Test streamed requests
 * Errors on remote conn closed
+* dir storage
+* test vary headers

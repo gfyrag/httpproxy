@@ -9,6 +9,7 @@ import (
 	"github.com/gfyrag/httpproxy/pkg"
 	"net/http"
 	"github.com/Sirupsen/logrus"
+	"github.com/gfyrag/httpproxy/pkg/cache"
 )
 
 var RootCmd = &cobra.Command{
@@ -20,12 +21,12 @@ var RootCmd = &cobra.Command{
 			logger.Level = logrus.DebugLevel
 		}
 
-		var store httpproxy.CacheStorage
+		var storage cache.Storage
 		switch viper.GetString("store") {
 		case "memory":
-			// Default
+			storage = cache.MemStorage()
 		case "dir":
-			store = httpproxy.Dir(viper.GetString("store-path"))
+			storage = cache.Dir(viper.GetString("store-path"))
 		}
 
 		tlsConfig, err := httpproxy.RSA(httpproxy.RSAConfig{
@@ -42,10 +43,7 @@ var RootCmd = &cobra.Command{
 				Config: tlsConfig,
 			}),
 			httpproxy.WithLogger(logger),
-			httpproxy.WithCache(&httpproxy.Cache{
-				Storage: store,
-			}),
-			httpproxy.WithBufferSize(viper.GetInt("buffer-size")),
+			httpproxy.WithCache(cache.New(cache.WithStorage(storage))),
 		))
 		if err != nil {
 			logger.Error(err)
@@ -65,7 +63,6 @@ func init() {
 	cobra.OnInitialize(initConfig)
 	RootCmd.Flags().Bool("debug", false, "Debug mode")
 	RootCmd.Flags().String("domain", "", "Common name for generated certificates")
-	RootCmd.Flags().Int("buffer-size", 1024, "Internal buffer size for requests")
 	RootCmd.Flags().String("store", "memory", "Store type")
 	RootCmd.Flags().String("store-path", "/tmp", "Store path for 'dir' store type")
 	RootCmd.Flags().Int("port", 3128, "Http port")

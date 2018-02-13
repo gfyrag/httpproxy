@@ -8,16 +8,19 @@
   version = "v1.0.4"
 
 [[projects]]
+  branch = "master"
+  name = "github.com/blang/vfs"
+  packages = [
+    ".",
+    "memfs"
+  ]
+  revision = "c14afcac17253ce7418da751ec6b1988790cdc8f"
+
+[[projects]]
   name = "github.com/davecgh/go-spew"
   packages = ["spew"]
   revision = "346938d642f2ec3594ed81d874461961cd0faa76"
   version = "v1.1.0"
-
-[[projects]]
-  name = "github.com/docker/go"
-  packages = ["canonical/json"]
-  revision = "62e5ec7cf43f795986ec658df7cb317255772993"
-  version = "v1.5.1-1"
 
 [[projects]]
   name = "github.com/fsnotify/fsnotify"
@@ -50,14 +53,14 @@
 [[projects]]
   name = "github.com/magiconair/properties"
   packages = ["."]
-  revision = "d419a98cdbed11a922bf76f257b7c4be79b50e73"
-  version = "v1.7.4"
+  revision = "c3beff4c2358b44d0493c7dda585e7db7ff28ae6"
+  version = "v1.7.6"
 
 [[projects]]
   branch = "master"
   name = "github.com/mitchellh/mapstructure"
   packages = ["."]
-  revision = "b4575eea38cca1123ec2dc90c26529b5c5acfcff"
+  revision = "a4e142e9c047c904fa2f1e144d9a84e6133024bc"
 
 [[projects]]
   name = "github.com/pborman/uuid"
@@ -78,15 +81,6 @@
   version = "v1.0.0"
 
 [[projects]]
-  branch = "master"
-  name = "github.com/pquerna/cachecontrol"
-  packages = [
-    ".",
-    "cacheobject"
-  ]
-  revision = "0dec1b30a0215bb68605dfc568e8855066c9202d"
-
-[[projects]]
   name = "github.com/spf13/afero"
   packages = [
     ".",
@@ -98,8 +92,8 @@
 [[projects]]
   name = "github.com/spf13/cast"
   packages = ["."]
-  revision = "acbeb36b902d72a7a4c18e8f3241075e7ab763e4"
-  version = "v1.1.0"
+  revision = "8965335b8c7107321228e3e3702cab9832751bac"
+  version = "v1.2.0"
 
 [[projects]]
   name = "github.com/spf13/cobra"
@@ -127,22 +121,15 @@
 
 [[projects]]
   name = "github.com/stretchr/testify"
-  packages = [
-    "assert",
-    "require",
-    "suite"
-  ]
+  packages = ["assert"]
   revision = "12b6f73e6084dad08a7c6e575284b177ecafbc71"
   version = "v1.2.1"
 
 [[projects]]
   branch = "master"
   name = "golang.org/x/crypto"
-  packages = [
-    "acme",
-    "ssh/terminal"
-  ]
-  revision = "1875d0a70c90e57f11972aefd42276df65e895b9"
+  packages = ["ssh/terminal"]
+  revision = "650f4a345ab4e5b245a3034b110ebc7299e68186"
 
 [[projects]]
   branch = "master"
@@ -151,7 +138,7 @@
     "unix",
     "windows"
   ]
-  revision = "8f27ce8a604014414f8dfffc25cbcde83a3f2216"
+  revision = "37707fdb30a5b38865cfb95e5aab41707daec7fd"
 
 [[projects]]
   branch = "master"
@@ -164,7 +151,7 @@
     "unicode/cldr",
     "unicode/norm"
   ]
-  revision = "e19ae1496984b1c655b8044a65c0300a3c878dd3"
+  revision = "4e4a3210bb54bb31f6ab2cdca2edcc0b50c420c1"
 
 [[projects]]
   branch = "v2"
@@ -175,6 +162,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "25ba8652d1108ec50ecb9fd0da7ea9764c31c2ca5ae9509b2468109a498a55cb"
+  inputs-digest = "a5c5d29d43b571249a6b98002b1099ffd0c724da03c902487a13f8ed5b860c9e"
   solver-name = "gps-cdcl"
   solver-version = 1

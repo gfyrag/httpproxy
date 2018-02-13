@@ -9,18 +9,19 @@ import (
 	"github.com/Sirupsen/logrus"
 	"github.com/pborman/uuid"
 	"context"
+	"github.com/gfyrag/httpproxy/pkg/cache"
 )
 
 type ConnectHandler interface {
-	Serve(*Request) error
+	Serve(*Session) error
 }
-type ConnectHandlerFn func(*Request) error
+type ConnectHandlerFn func(*Session) error
 
-func (fn ConnectHandlerFn) Serve(r *Request) error {
+func (fn ConnectHandlerFn) Serve(r *Session) error {
 	return fn(r)
 }
 
-var DefaultConnectHandler ConnectHandlerFn = func(request *Request) (err error) {
+var DefaultConnectHandler ConnectHandlerFn = func(request *Session) (err error) {
 	err = request.dialRemote()
 	if err != nil {
 		return err
@@ -34,7 +35,7 @@ type SSLBump struct {
 	Config *tls.Config
 }
 
-func (b *SSLBump) Serve(r *Request) error {
+func (b *SSLBump) Serve(r *Session) error {
 	r.clientConn = tls.Server(r.clientConn, b.Config)
 
 	req, err := http.ReadRequest(bufio.NewReader(r.clientConn))
@@ -55,9 +56,8 @@ func (b *SSLBump) Serve(r *Request) error {
 
 type proxy struct {
 	connectHandler ConnectHandler
-	cache          *Cache
+	cache          *cache.Cache
 	logger         *logrus.Logger
-	bufferSize     int
 	connectTimeout time.Duration
 }
 
@@ -84,14 +84,12 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx, _ = context.WithDeadline(ctx, time.Now().Add(p.connectTimeout))
 	}
 
-	req := &Request{
+	req := &Session{
 		proxy: p,
 		clientConn: clientConn,
 		Request: r,
 		logger: logger,
-		bufferSize: p.bufferSize,
 		ctx: ctx,
-		tx: p.cache.Tx(r),
 	}
 
 	err = req.Serve()
@@ -114,7 +112,7 @@ func WithLogger(l *logrus.Logger) proxyOptionFn {
 	}
 }
 
-func WithCache(c *Cache) proxyOptionFn {
+func WithCache(c *cache.Cache) proxyOptionFn {
 	return func(p *proxy) {
 		p.cache = c
 	}
@@ -126,12 +124,6 @@ func WithConnectHandler(c ConnectHandler) proxyOptionFn {
 	}
 }
 
-func WithBufferSize(bufferSize int) proxyOptionFn {
-	return func(p *proxy) {
-		p.bufferSize = bufferSize
-	}
-}
-
 func WithConnectTimeout(t time.Duration) proxyOptionFn {
 	return func(p *proxy) {
 		p.connectTimeout = t
@@ -140,9 +132,8 @@ func WithConnectTimeout(t time.Duration) proxyOptionFn {
 
 var DefaultOptions = []proxyOption{
 	WithLogger(logrus.StandardLogger()),
-	WithCache(&Cache{}),
+	WithCache(cache.New()),
 	WithConnectHandler(DefaultConnectHandler),
-	WithBufferSize(1024),
 	WithConnectTimeout(10*time.Second),
 }
 

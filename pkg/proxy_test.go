@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"crypto/tls"
 	"github.com/Sirupsen/logrus"
-	"time"
 	"strings"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
@@ -96,116 +95,6 @@ func TestHTTPSBump(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rsp.StatusCode)
 }
 
-func TestCache(t *testing.T) {
-	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Add("Cache-Control", "max-age=2")
-	})
-	proxy := Proxy()
-	httpBackend := httptest.NewServer(h)
-	srv := httptest.NewServer(proxy)
-	proxyUrl, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := &http.Client{
-		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyUrl),
-		},
-	}
-
-	req, err := http.NewRequest("GET", httpBackend.URL + "/", nil)
-	assert.NoError(t, err)
-
-	rsp, err := client.Do(req)
-	assert.NoError(t, err)
-	assert.NotNil(t, rsp)
-	assert.Equal(t, http.StatusOK, rsp.StatusCode)
-	_, err = proxy.cache.Tx(req).ReadMetadata()
-	assert.NoError(t, err)
-
-	rsp, err = client.Get(httpBackend.URL)
-	assert.NoError(t, err)
-	assert.NotNil(t, rsp)
-	assert.Equal(t, http.StatusOK, rsp.StatusCode)
-	assert.NotEmpty(t, rsp.Header.Get("Age"))
-
-	<-time.After(2*time.Second)
-
-	rsp, err = client.Get(httpBackend.URL)
-	assert.NoError(t, err)
-	assert.NotNil(t, rsp)
-	assert.Equal(t, http.StatusOK, rsp.StatusCode)
-	assert.Empty(t, rsp.Header.Get("Age"))
-}
-
-func TestETags(t *testing.T) {
-	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "max-age=1")
-		w.Header().Set("ETag", "0000")
-		if r.Header.Get("If-None-Match") != "" {
-			if r.Header.Get("If-None-Match") == "0000" {
-				w.WriteHeader(http.StatusNotModified)
-			}
-		}
-	})
-	httpBackend := httptest.NewServer(h)
-	proxy := Proxy()
-	srv := httptest.NewServer(proxy)
-	proxyUrl, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := &http.Client{
-		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyUrl),
-		},
-	}
-
-	req, err := http.NewRequest("GET", httpBackend.URL + "/", nil)
-	assert.NoError(t, err)
-
-	rsp, err := client.Do(req)
-	assert.NoError(t, err)
-	assert.NotNil(t, rsp)
-	assert.Equal(t, http.StatusOK, rsp.StatusCode)
-	_, err = proxy.cache.Tx(req).ReadMetadata()
-	assert.NoError(t, err)
-
-	<-time.After(2*time.Second)
-
-	rsp, err = client.Get(httpBackend.URL)
-	assert.NoError(t, err)
-	assert.NotNil(t, rsp)
-	assert.Equal(t, http.StatusOK, rsp.StatusCode)
-	assert.Equal(t, rsp.Header.Get("Age"), "0")
-}
-
-func TestWebSocket(t *testing.T) {
-	ws := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upgrader := websocket.Upgrader{}
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			panic(err)
-		}
-		conn.Close()
-	})
-	proxy := Proxy()
-	wsBackend := httptest.NewServer(ws)
-	srv := httptest.NewServer(proxy)
-	proxyUrl, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dialer := websocket.Dialer{
-		Proxy: func(*http.Request) (*url.URL, error) {
-			return proxyUrl, nil
-		},
-	}
-
-	_, _, err = dialer.Dial(strings.Replace(wsBackend.URL, "http", "ws", -1), nil)
-	assert.NoError(t, err)
-}
-
 func TestSecuredWebSocket(t *testing.T) {
 
 	ws := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -242,43 +131,4 @@ func TestSecuredWebSocket(t *testing.T) {
 
 	_, _, err = dialer.Dial(strings.Replace(wssBackend.URL, "http", "ws", -1), nil)
 	assert.NoError(t, err)
-}
-
-func TestConcurrentRequests(t *testing.T) {
-
-	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Add("Cache-Control", "max-age=2")
-		w.WriteHeader(200)
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			panic("expected http.ResponseWriter to be an http.Flusher")
-		}
-		flusher.Flush()
-		<-time.After(time.Second)
-	})
-	proxy := Proxy()
-	httpBackend := httptest.NewServer(h)
-	srv := httptest.NewServer(proxy)
-	proxyUrl, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := &http.Client{
-		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyUrl),
-		},
-	}
-
-	req, err := http.NewRequest("GET", httpBackend.URL + "/", nil)
-	assert.NoError(t, err)
-
-	rsp1, err := client.Do(req)
-	assert.NoError(t, err)
-	defer rsp1.Body.Close()
-
-	rsp2, err := client.Do(req)
-	assert.NoError(t, err)
-	defer rsp2.Body.Close()
-
-	assert.NotEmpty(t, rsp2.Header.Get("Age"))
 }

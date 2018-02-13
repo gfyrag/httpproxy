@@ -156,7 +156,6 @@ func BenchmarkHTTPSBumpECDSASpeed(b *testing.B) {
 		connectHandler: &SSLBump{
 			Config: tlsConfig,
 		},
-		bufferSize: 1024*1024,
 	}
 	httpsBackend := httptest.NewTLSServer(h)
 	srv := httptest.NewServer(proxy)
