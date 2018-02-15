@@ -156,7 +156,7 @@ func (s *vfsStorage) Insert(key string, r *Recipe) error {
 
 	path := filepath.Join(s.path(key), r.secondaryKey())
 
-	err := vfs.MkdirAll(s.Filesystem, path, 0666)
+	err := vfs.MkdirAll(s.Filesystem, path, 0777)
 	if err != nil {
 		return err
 	}
