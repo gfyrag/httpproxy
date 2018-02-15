@@ -52,7 +52,7 @@ func TestVary(t *testing.T) {
 	rsp1 := &http.Response{
 		Body: ioutil.NopCloser(bytes.NewBufferString("foo")),
 		Header: http.Header{
-			"Vary": []string { "Accept" },
+			"Vary": []string{"Accept" },
 		},
 	}
 
@@ -61,7 +61,7 @@ func TestVary(t *testing.T) {
 	rsp2 := &http.Response{
 		Body: ioutil.NopCloser(bytes.NewBufferString("foo")),
 		Header: http.Header{
-			"Vary": []string { "Accept" },
+			"Vary": []string{"Accept" },
 		},
 	}
 	now := time.Now().UTC()
@@ -84,6 +84,44 @@ func TestVary(t *testing.T) {
 	recipes, err := s.List(PrimaryKey(req2))
 	assert.NoError(t, err)
 	assert.Len(t, recipes, 2)
+}
 
+func TestMatchRecipe(t *testing.T) {
+
+	req1 := httptest.NewRequest("GET", "http://127.0.0.1", nil)
+	req1.Header.Set("Accept", "text/html")
+	rsp1 := &http.Response{
+		Body: ioutil.NopCloser(bytes.NewBufferString("foo")),
+		Header: http.Header{
+			"Vary": []string{"Accept" },
+		},
+	}
+
+	req2 := httptest.NewRequest("GET", "http://127.0.0.1", nil)
+	req2.Header.Set("Accept", "application/json")
+	rsp2 := &http.Response{
+		Body: ioutil.NopCloser(bytes.NewBufferString("foo")),
+		Header: http.Header{
+			"Vary": []string{"Accept" },
+		},
+	}
+	now := time.Now().UTC()
+
+	r1 := &Recipe{
+		Request: req1,
+		Response: rsp1,
+		RequestDate: now,
+		ResponseDate: now,
+	}
+	assert.True(t, r1.MatchRequest(req1))
+	assert.False(t, r1.MatchRequest(req2))
+	r2 := &Recipe{
+		Request: req2,
+		Response: rsp2,
+		RequestDate: now,
+		ResponseDate: now,
+	}
+	assert.True(t, r2.MatchRequest(req2))
+	assert.False(t, r2.MatchRequest(req1))
 }
 

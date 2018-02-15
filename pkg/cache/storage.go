@@ -34,6 +34,16 @@ func (r *Recipe) secondaryKey() string {
 	return base64.StdEncoding.EncodeToString(data)
 }
 
+// TODO: We should normalize
+func (r *Recipe) MatchRequest(req *http.Request) bool {
+	for _, h := range r.Response.Header[textproto.CanonicalMIMEHeaderKey("Vary")] {
+		if req.Header.Get(h) != r.Request.Header.Get(h) {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *Recipe) Close() {
 	c.Request.Body.Close()
 	c.Response.Body.Close()

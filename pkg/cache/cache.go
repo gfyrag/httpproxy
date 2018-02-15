@@ -3,7 +3,6 @@ package cache
 import (
 	"net/http"
 	"fmt"
-	"strings"
 	"time"
 	"io"
 	"sync"
@@ -59,34 +58,7 @@ func (c *Cache) selectCacheEntry(r *http.Request) (*Recipe, error) {
 		return nil, err
 	}
 	for i, entry := range entries {
-		match := true
-		// Compare 'Vary' Header
-		// See RFC7234 section
-		responseVaryHeaders := normalizeHeader("Vary", entry.Response.Header)
-		for _, varyHeader := range responseVaryHeaders {
-			originalRequestVaryHeaders := normalizeHeader(varyHeader, entry.Request.Header)
-			requestVaryHeaders := normalizeHeader(varyHeader, r.Header)
-			if len(originalRequestVaryHeaders) != 1 {
-				match = false
-				break
-			}
-			if len(requestVaryHeaders) != 1 {
-				match = false
-				break
-			}
-			// Normalize vary header value
-			// TODO: RFC defines than we have to normalize for each kind of header
-			// Here we just make it lower case
-			// It should be enough for most cases
-			originalRequestVaryHeader := strings.ToLower(originalRequestVaryHeaders[0])
-			requestVaryHeader := strings.ToLower(requestVaryHeaders[0])
-			if originalRequestVaryHeader != requestVaryHeader {
-				match = false
-				break
-			}
-
-		}
-		if match {
+		if entry.MatchRequest(r) {
 			if i < len(entries)-1 {
 				for _, remainingEntry := range entries[i+1:] {
 					remainingEntry.Close()
