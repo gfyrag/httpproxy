@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"github.com/Sirupsen/logrus"
 	"github.com/gfyrag/httpproxy/pkg/cache"
+	"crypto/tls"
 )
 
 var RootCmd = &cobra.Command{
@@ -35,6 +36,17 @@ var RootCmd = &cobra.Command{
 		if err != nil {
 			logger.Error(err)
 			os.Exit(1)
+		}
+
+		switch viper.GetString("tls-renegotiation") {
+		case "none":
+			// Do nothing, it is the default
+		case "once":
+			tlsConfig.Renegotiation = tls.RenegotiateOnceAsClient
+		case "free":
+			tlsConfig.Renegotiation = tls.RenegotiateFreelyAsClient
+		default:
+			logger.Errorf("unexpected tls renegotiation value: %s", viper.GetString("tls-renegotiation"))
 		}
 
 		logger.Infoln("Proxy started.")
@@ -65,6 +77,7 @@ func init() {
 	RootCmd.Flags().String("domain", "", "Common name for generated certificates")
 	RootCmd.Flags().String("store", "memory", "Store type")
 	RootCmd.Flags().String("store-path", "/tmp", "Store path for 'dir' store type")
+	RootCmd.Flags().String("tls-renegotiation", "none", "Whether or not enable tls renegotiation")
 	RootCmd.Flags().Int("port", 3128, "Http port")
 	RootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 	viper.BindPFlags(RootCmd.Flags())

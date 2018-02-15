@@ -100,7 +100,7 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	err = req.Serve()
 	if err != nil {
-		p.logger.Debugf("serve request error: %s", err)
+		logger.Debugf("serve request error: %s", err)
 	}
 }
 
