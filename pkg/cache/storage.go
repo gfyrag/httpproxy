@@ -3,21 +3,15 @@ package cache
 import (
 	"time"
 	"net/http"
-	"errors"
 	"encoding/base64"
 	"path/filepath"
 	"net/textproto"
 	"encoding/json"
-	"sort"
 	"os"
 	"bufio"
 	"github.com/blang/vfs"
 	"github.com/blang/vfs/memfs"
 	"github.com/davecgh/go-spew/spew"
-)
-
-var (
-	ErrRecipeNotFound = errors.New("recipe not found")
 )
 
 type Recipe struct {
@@ -27,12 +21,12 @@ type Recipe struct {
 	Response     *http.Response `json:"-"`
 }
 
+// See RFC7234 section 4.1
 func (r *Recipe) secondaryKey() string {
-	res := make([]string, 0)
+	res := make(map[string]string, 0)
 	for _, h := range r.Response.Header[textproto.CanonicalMIMEHeaderKey("Vary")] {
-		res = append(res, r.Request.Header.Get(h))
+		res[h] = r.Request.Header.Get(h)
 	}
-	sort.Strings(res)
 	data, err := json.Marshal(res)
 	if err != nil {
 		panic(err)

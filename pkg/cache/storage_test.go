@@ -45,3 +45,45 @@ func TestStorage(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, recipes, 0)
 }
+
+func TestVary(t *testing.T) {
+	req1 := httptest.NewRequest("GET", "http://127.0.0.1", nil)
+	req1.Header.Set("Accept", "text/html")
+	rsp1 := &http.Response{
+		Body: ioutil.NopCloser(bytes.NewBufferString("foo")),
+		Header: http.Header{
+			"Vary": []string { "Accept" },
+		},
+	}
+
+	req2 := httptest.NewRequest("GET", "http://127.0.0.1", nil)
+	req2.Header.Set("Accept", "application/json")
+	rsp2 := &http.Response{
+		Body: ioutil.NopCloser(bytes.NewBufferString("foo")),
+		Header: http.Header{
+			"Vary": []string { "Accept" },
+		},
+	}
+	now := time.Now().UTC()
+
+	s := MemStorage()
+
+	assert.NoError(t, s.Insert(PrimaryKey(req1), &Recipe{
+		Request: req1,
+		Response: rsp1,
+		RequestDate: now,
+		ResponseDate: now,
+	}))
+	assert.NoError(t, s.Insert(PrimaryKey(req2), &Recipe{
+		Request: req2,
+		Response: rsp2,
+		RequestDate: now,
+		ResponseDate: now,
+	}))
+
+	recipes, err := s.List(PrimaryKey(req2))
+	assert.NoError(t, err)
+	assert.Len(t, recipes, 2)
+
+}
+
