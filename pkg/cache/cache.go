@@ -109,6 +109,8 @@ func (c *Cache) validationRequest(w io.Writer, cl Doer, recipe *Recipe) (*http.R
 // TODO: Serve stale responses (See RFC7234 section 4.2.4)
 func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 
+	stripHopByHopHeaders(req)
+
 	c.logger.Debugf("serve request")
 	defer func() {
 		c.logger.Debugf("request finished")
@@ -214,6 +216,7 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 			defer wg.Wait()
 
 			c.logger.Debugf("caching response")
+			stripHopByHopHeaders(rsp)
 			var w *io.PipeWriter
 			rspCp := new(http.Response)
 			*rspCp = *rsp

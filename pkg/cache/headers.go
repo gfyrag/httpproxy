@@ -7,6 +7,36 @@ import (
 	"strconv"
 )
 
+var (
+	// See RFC2616 section 13.5.1
+	hopByHopHeaders = []string {
+		"Connection",
+		"Keep-Alive",
+		"Proxy-Authenticate",
+		"Proxy-Authorization",
+		"TE",
+		"Trailers",
+		"Transfer-Encoding",
+		"Upgrade",
+	}
+)
+
+// See RFC2616 section 13.5.1
+func stripHopByHopHeaders(v interface{}) {
+	headers := hopByHopHeaders[:]
+	var header http.Header
+	switch vv := v.(type) {
+	case *http.Request:
+		header = vv.Header
+		headers = append(headers, Connection(vv)...)
+	case *http.Response:
+		header = vv.Header
+	}
+	for _, h := range headers {
+		header.Del(h)
+	}
+}
+
 // See other directives : https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control
 type cacheControl struct {
 	request bool
@@ -107,4 +137,8 @@ func IfNoneMatch(r *http.Request) string {
 func IfModifiedSince(r *http.Request) time.Time {
 	t, _ := http.ParseTime(r.Header.Get("If-Nodified-Since"))
 	return t
+}
+
+func Connection(r *http.Request) []string {
+	return normalizeHeader("Connection", r.Header)
 }

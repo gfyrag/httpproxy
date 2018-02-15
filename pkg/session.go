@@ -11,7 +11,8 @@ import (
 	"fmt"
 	"github.com/pkg/errors"
 	"github.com/gfyrag/httpproxy/pkg/cache"
-	"github.com/pborman/uuid"
+	"io"
+	"strings"
 )
 
 type dialer func(context.Context) error
@@ -63,9 +64,20 @@ func (r *Session) doRequest(req *http.Request) (*http.Response, error) {
 }
 
 func (r *Session) handleRequest(req *http.Request) error {
-	return r.proxy.cache.
-		WithOptions(cache.WithLogger(r.logger)).
-		Serve(r.clientConn, cache.DoerFn(r.doRequest), req)
+	switch {
+	case strings.ToLower(req.Header.Get("Upgrade")) == "websocket":
+		err := r.dialRemote()
+		if err != nil {
+			return err
+		}
+		go req.Write(r.remoteConn)
+		io.Copy(r.clientConn, r.remoteConn)
+		return nil
+	default:
+		return r.proxy.cache.
+			WithOptions(cache.WithLogger(r.logger)).
+			Serve(r.clientConn, cache.DoerFn(r.doRequest), req)
+	}
 }
 
 func (r *Session) writeStatusLine(status int, text string) error {
