@@ -251,7 +251,7 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 					ResponseDate: now,
 				})
 				if err != nil {
-					panic(err)
+					c.logger.Errorf("error caching response: %s", err)
 				}
 			}()
 		} else {
