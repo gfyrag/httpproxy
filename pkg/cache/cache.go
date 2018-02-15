@@ -252,6 +252,7 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 				})
 				if err != nil {
 					c.logger.Errorf("error caching response: %s", err)
+					io.Copy(ioutil.Discard, rspCp.Body)
 				}
 			}()
 		} else {
