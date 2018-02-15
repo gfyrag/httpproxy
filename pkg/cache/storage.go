@@ -51,7 +51,6 @@ func (c *Recipe) Close() {
 
 type Storage interface {
 	List(string) ([]*Recipe, error)
-	Update(string, *Recipe) error
 	Insert(string, *Recipe) error
 	Delete(string, *Recipe) error
 }
@@ -69,6 +68,9 @@ func (d *vfsStorage) path(key string) string {
 	}
 	return path
 }
+
+// Don't close request/response files since these will be consumed by the caller.
+// Therefore, it is the caller responsability to properly close file descriptors
 func (s *vfsStorage) reconstruct(p string) (*Recipe, error) {
 	infoFile, err := vfs.Open(s.Filesystem, filepath.Join(p, "info.json"))
 	if err != nil {
@@ -86,7 +88,6 @@ func (s *vfsStorage) reconstruct(p string) (*Recipe, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer requestFile.Close()
 	recipe.Request, err = http.ReadRequest(bufio.NewReader(requestFile))
 	if err != nil {
 		return nil, err
@@ -96,7 +97,6 @@ func (s *vfsStorage) reconstruct(p string) (*Recipe, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer responseFile.Close()
 	recipe.Response, err = http.ReadResponse(bufio.NewReader(responseFile), recipe.Request)
 	if err != nil {
 		return nil, err
@@ -122,40 +122,7 @@ func (s *vfsStorage) List(key string) ([]*Recipe, error) {
 	}
 	return res, nil
 }
-func (s *vfsStorage) Update(key string, r *Recipe) error {
-	path := filepath.Join(s.path(key), r.secondaryKey())
-	infoFile, err := s.Filesystem.OpenFile(filepath.Join(path, "info.json"), os.O_RDWR, 0666)
-	if err != nil {
-		return err
-	}
-	defer infoFile.Close()
-	err = json.NewEncoder(infoFile).Encode(r)
-	if err != nil {
-		return err
-	}
 
-	requestFile, err := s.Filesystem.OpenFile(filepath.Join(path, "request"), os.O_RDWR, 0666)
-	if err != nil {
-		return err
-	}
-	defer requestFile.Close()
-	err = r.Request.Write(requestFile)
-	if err != nil {
-		return err
-	}
-
-	responseFile, err := s.Filesystem.OpenFile(filepath.Join(path, "response"), os.O_RDWR, 0666)
-	if err != nil {
-		return err
-	}
-	defer responseFile.Close()
-	err = r.Response.Write(responseFile)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
 func (s *vfsStorage) Insert(key string, r *Recipe) error {
 
 	path := filepath.Join(s.path(key), r.secondaryKey())
@@ -165,7 +132,7 @@ func (s *vfsStorage) Insert(key string, r *Recipe) error {
 		return err
 	}
 
-	infoFile, err := s.Filesystem.OpenFile(filepath.Join(path, "info.json"), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0666)
+	infoFile, err := vfs.Create(s.Filesystem, filepath.Join(path, "info.json"))
 	if err != nil {
 		return err
 	}
@@ -175,17 +142,17 @@ func (s *vfsStorage) Insert(key string, r *Recipe) error {
 		return err
 	}
 
-	requestFile, err := s.Filesystem.OpenFile(filepath.Join(path, "request"), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0666)
+	requestFile, err := vfs.Create(s.Filesystem, filepath.Join(path, "request"))
 	if err != nil {
 		return err
 	}
 	defer requestFile.Close()
-	err = r.Request.Write(requestFile)
+	err = r.Request.WriteProxy(requestFile)
 	if err != nil {
 		return err
 	}
 
-	responseFile, err := s.Filesystem.OpenFile(filepath.Join(path, "response"), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0666)
+	responseFile, err := vfs.Create(s.Filesystem, filepath.Join(path, "response"))
 	if err != nil {
 		return err
 	}

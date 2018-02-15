@@ -91,6 +91,7 @@ func (r *Session) Serve() error {
 
 	netDialer := net.Dialer{}
 	r.dialer = func(ctx context.Context) (err error) {
+		// See RFC7230 section 5.4 for address construction
 		address := r.URL.Host
 		if r.URL.Port() == "" {
 			address += ":80"

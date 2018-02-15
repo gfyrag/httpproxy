@@ -8,6 +8,11 @@ import (
 	"sync"
 	"io/ioutil"
 	"github.com/Sirupsen/logrus"
+	"errors"
+)
+
+var (
+	ErrValidationFailed = errors.New("validation failed")
 )
 
 func PrimaryKey(r *http.Request) string {
@@ -73,31 +78,25 @@ func (c *Cache) selectCacheEntry(r *http.Request) (*Recipe, error) {
 
 // See RFC7234 section 4.3
 func (c *Cache) validationRequest(w io.Writer, cl Doer, recipe *Recipe) (*http.Response, error) {
-	cp := new(http.Request)
-	*cp = *recipe.Request
+	valid := new(http.Request)
+	*valid = *recipe.Request
 	for _, v := range c.validators {
-		v.Process(recipe.Response, cp)
+		v.Process(recipe.Response, valid)
 	}
-	now := time.Now()
-	rsp, err := cl.Do(cp)
+	//now := time.Now()
+	rsp, err := cl.Do(valid)
 	if err != nil {
 		return nil, err
 	}
 	// See RFC7234 section 4.3.3
+	if rsp.StatusCode > 500 {
+		return nil, ErrValidationFailed
+	}
 	if rsp.StatusCode == http.StatusNotModified {
 		// Update stored response
 		// See section 4.3.4
 		recipe.Response.Header = rsp.Header
 		rsp = recipe.Response
-	} else if rsp.StatusCode < 500 {
-		// Update store response
-		recipe.ResponseDate = time.Now()
-		recipe.RequestDate = now
-		recipe.Response = rsp
-		err = c.storage.Update(PrimaryKey(cp), recipe)
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	// TODO: See RFC7234 section 4.3.3 for removing warning Header
@@ -145,16 +144,21 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 	now := time.Now().UTC()
 
 	if IsConditionalRequest(req) {
-		if recipe != nil  && c.validators.Validate(recipe) {
-			c.logger.Debugf("conditional request validated")
-			rsp = recipe.Response
-			if rsp.Body != nil {
-				rsp.Body.Close()
-				rsp.Body = nil
-			}
-			recipe.Response.StatusCode = http.StatusNotModified
+
+		if recipe == nil {
+			c.logger.Debugf("forward conditional request as we have no matching recipe")
 		} else {
-			c.logger.Debugf("conditional request failed")
+			if c.validators.Validate(recipe) {
+				c.logger.Debugf("conditional request validated")
+				rsp = recipe.Response
+				if rsp.Body != nil {
+					rsp.Body.Close()
+					rsp.Body = nil
+				}
+				recipe.Response.StatusCode = http.StatusNotModified
+			} else {
+				c.logger.Debugf("conditional request failed")
+			}
 		}
 	} else if recipe != nil {
 		if noCacheOnRequest {
@@ -177,9 +181,6 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 				if noCacheOnResponse || expired {
 					c.logger.Debugf("revalidate request")
 					rsp, err = c.validationRequest(w, doer, recipe)
-					if err != nil {
-						return err
-					}
 				} else {
 					c.logger.Debugf("use stored response")
 					rsp = recipe.Response
@@ -198,10 +199,16 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	if recipe == nil || rsp != recipe.Response {
+		// Close the recipe since we have a new response to forward and possibly caching
+		if recipe != nil {
+			recipe.Close()
+		}
 
 		permitCache := PermitCache(rsp)
 		if permitCache == nil {
-
 			wg := sync.WaitGroup{}
 			wg.Add(1)
 			defer wg.Wait()

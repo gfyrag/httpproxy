@@ -10,6 +10,7 @@ import (
 	"github.com/pborman/uuid"
 	"context"
 	"github.com/gfyrag/httpproxy/pkg/cache"
+	"net/http/httputil"
 )
 
 type ConnectHandler interface {
@@ -66,6 +67,11 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id := uuid.New()
 	logger := p.logger.WithField("id", id)
 	logger.Debugf("serve request %s", r.URL)
+
+	if logger.Level <= logrus.DebugLevel {
+		data, _ := httputil.DumpRequest(r, false)
+		logger.Logger.Writer().Write([]byte(data))
+	}
 
 	hi, ok := w.(http.Hijacker)
 	if !ok {
