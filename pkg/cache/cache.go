@@ -116,136 +116,144 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 		c.logger.Debugf("request finished")
 	}()
 
-	err := PermitCache(req)
-	if err != nil {
-		c.logger.Debugf("request does not allow cache: %s", err)
-		return err
-	}
-
-	l := c.lock(req)
-	l.Lock()
-	defer l.Unlock()
-
-	noCacheOnRequest, err := NoCache(req)
-	if err != nil {
-		return err
-	}
-
-	recipe, err := c.selectCacheEntry(req)
-	if err != nil {
-		return err
-	}
-
-	var rsp *http.Response
+	var (
+		rsp *http.Response
+		err error
+	)
 	defer func() {
 		if rsp != nil && rsp.Body != nil {
 			rsp.Body.Close()
 		}
 	}()
 
-	now := time.Now().UTC()
-
-	if IsConditionalRequest(req) {
-
-		if recipe == nil {
-			c.logger.Debugf("forward conditional request as we have no matching recipe")
-		} else {
-			if c.validators.Validate(recipe) {
-				c.logger.Debugf("conditional request validated")
-				rsp = recipe.Response
-				if rsp.Body != nil {
-					rsp.Body.Close()
-					rsp.Body = nil
-				}
-				recipe.Response.StatusCode = http.StatusNotModified
-			} else {
-				c.logger.Debugf("conditional request failed")
-			}
-		}
-	} else if recipe != nil {
-		if noCacheOnRequest {
-			c.logger.Debugf("request queried no-cache")
-			// the request contain the no-cache cache directive
-			// (Section 5.2.2.2), we have to revalidate
-			rsp, err = c.validationRequest(w, doer, recipe)
-		} else {
-			// the stored response contain the no-cache cache directive
-			// (Section 5.2.2.2), we have to revalidate
-			noCacheOnResponse, err := NoCache(recipe.Response)
-			if err == nil {
-				if noCacheOnResponse {
-					c.logger.Debugf("response specified no-cache")
-				}
-				expired := Expired(recipe.Response, now)
-				if expired {
-					c.logger.Debugf("response expired")
-				}
-				if noCacheOnResponse || expired {
-					c.logger.Debugf("revalidate request")
-					rsp, err = c.validationRequest(w, doer, recipe)
-				} else {
-					c.logger.Debugf("use stored response")
-					rsp = recipe.Response
-					rsp.Header.Set("Age", fmt.Sprintf("%d", int64(Age(rsp, recipe.RequestDate, recipe.ResponseDate).Seconds())))
-				}
-			}
-		}
-	}
+	err = PermitCache(req)
 	if err != nil {
-		return err
-	}
-
-	if rsp == nil {
-		c.logger.Debugf("unable to find response, contact origin")
+		c.logger.Debugf("request does not allow cache: %s", err)
 		rsp, err = doer.Do(req)
 		if err != nil {
 			return err
 		}
-	}
+	} else {
+		l := c.lock(req)
+		l.Lock()
+		defer l.Unlock()
 
-	if recipe == nil || rsp != recipe.Response {
-		// Close the recipe since we have a new response to forward and possibly caching
-		if recipe != nil {
-			recipe.Close()
+		noCacheOnRequest, err := NoCache(req)
+		if err != nil {
+			return err
 		}
 
-		permitCache := PermitCache(rsp)
-		if permitCache == nil {
-			wg := sync.WaitGroup{}
-			wg.Add(1)
-			defer wg.Wait()
+		recipe, err := c.selectCacheEntry(req)
+		if err != nil {
+			return err
+		}
 
-			c.logger.Debugf("caching response")
-			stripHopByHopHeaders(rsp)
-			var w *io.PipeWriter
-			rspCp := new(http.Response)
-			*rspCp = *rsp
-			rspCp.Body, w = io.Pipe()
-			rsp.Body = ioutil.NopCloser(io.TeeReader(rsp.Body, w))
-			defer w.Close()
 
-			go func() {
-				defer wg.Done()
-				err = c.storage.Insert(PrimaryKey(req), &Recipe{
-					Request: req,
-					Response: rspCp,
-					RequestDate: now,
-					ResponseDate: now,
-				})
-				if err != nil {
-					c.logger.Errorf("error caching response: %s", err)
-					io.Copy(ioutil.Discard, rspCp.Body)
+
+		now := time.Now().UTC()
+
+		if IsConditionalRequest(req) {
+
+			if recipe == nil {
+				c.logger.Debugf("forward conditional request as we have no matching recipe")
+			} else {
+				if c.validators.Validate(recipe) {
+					c.logger.Debugf("conditional request validated")
+					rsp = recipe.Response
+					if rsp.Body != nil {
+						rsp.Body.Close()
+						rsp.Body = nil
+					}
+					recipe.Response.StatusCode = http.StatusNotModified
+				} else {
+					c.logger.Debugf("conditional request failed")
 				}
-			}()
-		} else {
-			c.logger.Debugf("response not cachable: %s", permitCache)
+			}
+		} else if recipe != nil {
+			if noCacheOnRequest {
+				c.logger.Debugf("request queried no-cache")
+				// the request contain the no-cache cache directive
+				// (Section 5.2.2.2), we have to revalidate
+				rsp, err = c.validationRequest(w, doer, recipe)
+			} else {
+				// the stored response contain the no-cache cache directive
+				// (Section 5.2.2.2), we have to revalidate
+				noCacheOnResponse, err := NoCache(recipe.Response)
+				if err == nil {
+					if noCacheOnResponse {
+						c.logger.Debugf("response specified no-cache")
+					}
+					expired := Expired(recipe.Response, now)
+					if expired {
+						c.logger.Debugf("response expired")
+					}
+					if noCacheOnResponse || expired {
+						c.logger.Debugf("revalidate request")
+						rsp, err = c.validationRequest(w, doer, recipe)
+					} else {
+						c.logger.Debugf("use stored response")
+						rsp = recipe.Response
+						rsp.Header.Set("Age", fmt.Sprintf("%d", int64(Age(rsp, recipe.RequestDate, recipe.ResponseDate).Seconds())))
+					}
+				}
+			}
 		}
-	}
+		if err != nil {
+			return err
+		}
 
-	// Per RFC7231 section 7.1.1.2, the 'Date' header is not absolutely mandatory
-	if Date(rsp).IsZero() {
-		c.logger.Debugf("response does not contains any 'Date', add the generated once")
-		rsp.Header.Set("Date", now.Format(http.TimeFormat))
+		if rsp == nil {
+			c.logger.Debugf("unable to find response, contact origin")
+			rsp, err = doer.Do(req)
+			if err != nil {
+				return err
+			}
+		}
+
+		if recipe == nil || rsp != recipe.Response {
+			// Close the recipe since we have a new response to forward and possibly caching
+			if recipe != nil {
+				recipe.Close()
+			}
+
+			permitCache := PermitCache(rsp)
+			if permitCache == nil {
+				wg := sync.WaitGroup{}
+				wg.Add(1)
+				defer wg.Wait()
+
+				c.logger.Debugf("caching response")
+				stripHopByHopHeaders(rsp)
+				var w *io.PipeWriter
+				rspCp := new(http.Response)
+				*rspCp = *rsp
+				rspCp.Body, w = io.Pipe()
+				rsp.Body = ioutil.NopCloser(io.TeeReader(rsp.Body, w))
+				defer w.Close()
+
+				go func() {
+					defer wg.Done()
+					err = c.storage.Insert(PrimaryKey(req), &Recipe{
+						Request: req,
+						Response: rspCp,
+						RequestDate: now,
+						ResponseDate: now,
+					})
+					if err != nil {
+						c.logger.Errorf("error caching response: %s", err)
+						io.Copy(ioutil.Discard, rspCp.Body)
+					}
+				}()
+			} else {
+				c.logger.Debugf("response not cachable: %s", permitCache)
+			}
+		}
+
+		// Per RFC7231 section 7.1.1.2, the 'Date' header is not absolutely mandatory
+		if Date(rsp).IsZero() {
+			c.logger.Debugf("response does not contains any 'Date', add the generated once")
+			rsp.Header.Set("Date", now.Format(http.TimeFormat))
+		}
 	}
 
 	c.logger.Debugf("write response")
