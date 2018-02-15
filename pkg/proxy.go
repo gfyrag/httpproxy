@@ -104,7 +104,7 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-type proxyOption interface {
+type Option interface {
 	apply(*proxy)
 }
 type proxyOptionFn func(*proxy)
@@ -136,14 +136,14 @@ func WithConnectTimeout(t time.Duration) proxyOptionFn {
 	}
 }
 
-var DefaultOptions = []proxyOption{
+var DefaultOptions = []Option{
 	WithLogger(logrus.StandardLogger()),
 	WithCache(cache.New()),
 	WithConnectHandler(DefaultConnectHandler),
 	WithConnectTimeout(10*time.Second),
 }
 
-func Proxy(opts ...proxyOption) *proxy {
+func Proxy(opts ...Option) *proxy {
 	p := &proxy{}
 	for _, o := range append(DefaultOptions, opts...) {
 		o.apply(p)

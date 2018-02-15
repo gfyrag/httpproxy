@@ -64,9 +64,7 @@ func TestHTTPS(t *testing.T) {
 }
 
 func TestHTTPSBump(t *testing.T) {
-	tlsConfig, err := RSA(RSAConfig{
-		Domain: "example.net",
-	})
+	tlsConfig, err := RSA()
 	assert.NoError(t, err)
 
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
@@ -105,9 +103,7 @@ func TestSecuredWebSocket(t *testing.T) {
 		}
 		conn.Close()
 	})
-	tlsConfig, err := RSA(RSAConfig{
-		Domain: "example.net",
-	})
+	tlsConfig, err := RSA()
 	assert.NoError(t, err)
 	proxy := Proxy(WithConnectHandler(&SSLBump{
 		Config: tlsConfig,

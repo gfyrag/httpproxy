@@ -22,6 +22,9 @@ var RootCmd = &cobra.Command{
 			logger.Level = logrus.DebugLevel
 		}
 
+		var options []httpproxy.Option
+		options = append(options, httpproxy.WithLogger(logger))
+
 		var storage cache.Storage
 		switch viper.GetString("store") {
 		case "memory":
@@ -29,34 +32,46 @@ var RootCmd = &cobra.Command{
 		case "dir":
 			storage = cache.Dir(viper.GetString("store-path"))
 		}
+		options = append(options, httpproxy.WithCache(cache.New(cache.WithStorage(storage))))
 
-		tlsConfig, err := httpproxy.RSA(httpproxy.RSAConfig{
-			Domain: viper.GetString("domain"),
-		})
-		if err != nil {
-			logger.Error(err)
-			os.Exit(1)
-		}
+		if viper.GetBool("ssl-bump") {
+			var (
+				tlsConfig *tls.Config
+				err error
+			)
+			switch viper.GetString("ssl-bump-key-type") {
+			case "ecdsa":
+				tlsConfig, err = httpproxy.RSA()
+			case "rsa":
+				tlsConfig, err = httpproxy.ECDSA()
+			default:
+				logger.Errorf("unexpected tls renegotiation value: %s", viper.GetString("tls-renegotiation"))
+				os.Exit(1)
+			}
 
-		switch viper.GetString("tls-renegotiation") {
-		case "none":
+			if err != nil {
+				logger.Error(err)
+				os.Exit(1)
+			}
+
+			switch viper.GetString("tls-renegotiation") {
+			case "none":
 			// Do nothing, it is the default
-		case "once":
-			tlsConfig.Renegotiation = tls.RenegotiateOnceAsClient
-		case "free":
-			tlsConfig.Renegotiation = tls.RenegotiateFreelyAsClient
-		default:
-			logger.Errorf("unexpected tls renegotiation value: %s", viper.GetString("tls-renegotiation"))
+			case "once":
+				tlsConfig.Renegotiation = tls.RenegotiateOnceAsClient
+			case "free":
+				tlsConfig.Renegotiation = tls.RenegotiateFreelyAsClient
+			default:
+				logger.Errorf("unexpected tls renegotiation value: %s", viper.GetString("tls-renegotiation"))
+			}
+
+			options = append(options, httpproxy.WithConnectHandler(&httpproxy.SSLBump{
+				Config: tlsConfig,
+			}))
 		}
 
 		logger.Infoln("Proxy started.")
-		err = http.ListenAndServe(fmt.Sprintf(":%d", viper.GetInt("port")), httpproxy.Proxy(
-			httpproxy.WithConnectHandler(&httpproxy.SSLBump{
-				Config: tlsConfig,
-			}),
-			httpproxy.WithLogger(logger),
-			httpproxy.WithCache(cache.New(cache.WithStorage(storage))),
-		))
+		err := http.ListenAndServe(fmt.Sprintf(":%d", viper.GetInt("port")), httpproxy.Proxy(options...))
 		if err != nil {
 			logger.Error(err)
 			os.Exit(1)
@@ -74,10 +89,11 @@ func Execute() {
 func init() {
 	cobra.OnInitialize(initConfig)
 	RootCmd.Flags().Bool("debug", false, "Debug mode")
-	RootCmd.Flags().String("domain", "", "Common name for generated certificates")
 	RootCmd.Flags().String("store", "memory", "Store type")
 	RootCmd.Flags().String("store-path", "/tmp", "Store path for 'dir' store type")
 	RootCmd.Flags().String("tls-renegotiation", "none", "Whether or not enable tls renegotiation")
+	RootCmd.Flags().Bool("ssl-bump", true, "Intercept ssl connections")
+	RootCmd.Flags().String("ssl-bump-key-type", "rsa", "Private key type")
 	RootCmd.Flags().Int("port", 3128, "Http port")
 	RootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 	viper.BindPFlags(RootCmd.Flags())

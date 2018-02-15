@@ -99,9 +99,7 @@ func BenchmarkHTTPSBumpRSASpeed(b *testing.B) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(make([]byte, 1024*1024*10)) // 10MB
 	})
-	tlsConfig, err := RSA(RSAConfig{
-		Domain: "example.net",
-	})
+	tlsConfig, err := RSA()
 	proxy := &proxy{
 		connectHandler: &SSLBump{
 			Config: tlsConfig,
@@ -145,9 +143,7 @@ func BenchmarkHTTPSBumpECDSASpeed(b *testing.B) {
 		w.Write(data) // 10MB
 	})
 
-	tlsConfig, err := ECDSA(ECDSAConfig{
-		Domain: "example.net",
-	})
+	tlsConfig, err := ECDSA()
 	if err != nil {
 		b.Error(err)
 		return
