@@ -132,3 +132,22 @@ func TestSecuredWebSocket(t *testing.T) {
 	_, _, err = dialer.Dial(strings.Replace(wssBackend.URL, "http", "ws", -1), nil)
 	assert.NoError(t, err)
 }
+
+func TestInvalidRemote(t *testing.T) {
+	proxy := Proxy()
+	srv := httptest.NewServer(proxy)
+	proxyUrl, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyUrl),
+		},
+	}
+
+	rsp, err := client.Get("http://127.0.0.1:1234")
+	assert.NoError(t, err)
+	assert.NotNil(t, rsp)
+	assert.Equal(t, http.StatusServiceUnavailable, rsp.StatusCode)
+}
