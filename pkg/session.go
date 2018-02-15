@@ -64,7 +64,7 @@ func (r *Session) doRequest(req *http.Request) (*http.Response, error) {
 
 func (r *Session) handleRequest(req *http.Request) error {
 	return r.proxy.cache.
-		WithOptions(cache.WithLogger(r.logger.WithField("id", uuid.New()))).
+		WithOptions(cache.WithLogger(r.logger)).
 		Serve(r.clientConn, cache.DoerFn(r.doRequest), req)
 }
 
