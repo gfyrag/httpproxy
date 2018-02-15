@@ -76,6 +76,21 @@ func CacheControl(v interface{}) (cacheControl, error) {
 	return cc, nil
 }
 
+func Expires(r *http.Response) *time.Time {
+	expiresHeader := r.Header.Get("Expires")
+	if expiresHeader == "" {
+		return nil
+	}
+
+	// See RFC7234 section 5.3
+	//  A cache recipient MUST interpret invalid date formats, especially the
+	// value "0", as representing a time in the past (i.e., "already
+	// expired").
+	// So we ignore err
+	expires, _ := http.ParseTime(expiresHeader)
+	return &expires
+}
+
 func LastModified(r *http.Response) time.Time {
 	t, _ := http.ParseTime(r.Header.Get("Last-Modified"))
 	return t

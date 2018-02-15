@@ -52,7 +52,7 @@ func IsConditionalRequest(r *http.Request) bool {
 func PermitCache(v interface{}) (error) {
 
 	var (
-		expires time.Time
+		expires *time.Time
 		headers http.Header
 	)
 	switch vv := v.(type) {
@@ -77,7 +77,7 @@ func PermitCache(v interface{}) (error) {
 	if err != nil {
 		return err
 	}
-	if expires.IsZero() && !cc.Cacheable() {
+	if expires == nil && !cc.Cacheable() {
 		return ErrNoFreshnessInfo
 	}
 
@@ -114,12 +114,6 @@ func NoCache(v interface{}) (bool, error) {
 		return true, err
 	}
 	return cacheControl.noCache, nil
-}
-
-func Expires(r *http.Response) time.Time {
-	expiresHeader := r.Header.Get("Expires")
-	expires, _ := http.ParseTime(expiresHeader)
-	return expires
 }
 
 func Expiration(r *http.Response, responseDate time.Time) (time.Time, error) {
