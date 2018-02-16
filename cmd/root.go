@@ -49,6 +49,8 @@ var RootCmd = &cobra.Command{
 				os.Exit(1)
 			}
 
+			options = append(options, httpproxy.WithTLSConfig(tlsConfig))
+
 			if err != nil {
 				logger.Error(err)
 				os.Exit(1)
@@ -66,14 +68,16 @@ var RootCmd = &cobra.Command{
 				os.Exit(1)
 			}
 
-			options = append(options, httpproxy.WithConnectHandler(&httpproxy.SSLBump{
-				Config: tlsConfig,
-			}))
+			options = append(options, httpproxy.WithConnectHandler(&httpproxy.TLSBridge{}))
 		}
 
-		l, err := net.ListenTCP("tcp", &net.TCPAddr{
-			Port: viper.GetInt("port"),
-		})
+		addr, err := net.ResolveTCPAddr("tcp", viper.GetString("addr"))
+		if err != nil {
+			logger.Error(err)
+			os.Exit(1)
+		}
+
+		l, err := net.ListenTCP("tcp", addr)
 		if err != nil {
 			logger.Errorf("unable to listen tcp: %s", err)
 			os.Exit(1)
@@ -104,7 +108,7 @@ func init() {
 	RootCmd.Flags().String("tls-renegotiation", "none", "Whether or not enable tls renegotiation")
 	RootCmd.Flags().Bool("ssl-bump", true, "Intercept ssl connections")
 	RootCmd.Flags().String("ssl-bump-key-type", "rsa", "Private key type")
-	RootCmd.Flags().Int("port", 3128, "Listening port")
+	RootCmd.Flags().String("addr", ":3128", "Listening addr")
 	RootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 	viper.BindPFlags(RootCmd.Flags())
 }

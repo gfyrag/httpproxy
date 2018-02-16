@@ -12,31 +12,17 @@ import (
 	"net"
 	"net/url"
 	"bytes"
+	"crypto/tls"
+	"errors"
+	"net/http/httputil"
 )
 
-type TLSInterceptor interface {
-	Intercept(*Session, *net.Dialer, *net.TCPAddr) error
-}
-type TLSInterceptorFn func(*Session, *net.Dialer, *net.TCPAddr) error
-
-func (fn TLSInterceptorFn) Intercept(s *Session, dialer *net.Dialer, remoteAddr *net.TCPAddr) error {
-	return fn(s, dialer, remoteAddr)
-}
-
-func PassthroughTLSInterceptor(session *Session, dialer *net.Dialer, remoteAddr *net.TCPAddr) error {
-	remoteConn, err := dialer.DialContext(session.ctx, "tcp", remoteAddr.String())
-	if err != nil {
-		return err
-	}
-	defer remoteConn.Close()
-
-	go io.Copy(remoteConn, session.clientConn)
-	io.Copy(session.clientConn, remoteConn)
-	return nil
-}
+var (
+	ErrNoTLSConfig = errors.New("no tls config")
+)
 
 type proxy struct {
-	tlsInterceptor TLSInterceptor
+	tlsConfig *tls.Config
 	connectHandler ConnectHandler
 	cache          *cache.Cache
 	logger         *logrus.Logger
@@ -62,6 +48,23 @@ func (c *wrappedTCPConn) Read(b []byte) (int, error) {
 	return c.reader.Read(b)
 }
 
+func (p *proxy) tlsBridge(session *Session) error {
+	if p.tlsConfig == nil {
+		return ErrNoTLSConfig
+	}
+	session.clientConn = tls.Server(session.clientConn, p.tlsConfig)
+	session.dialer = func(d dialer) dialer {
+		return func(ctx context.Context, req *http.Request) (net.Conn, error) {
+			conn, err := d(ctx, req)
+			if err != nil {
+				return nil, err
+			}
+			return tls.Client(conn, p.tlsConfig), nil
+		}
+	}(session.dialer)
+	return nil
+}
+
 func (p *proxy) serve(conn net.Conn) error {
 
 	ctx := context.Background()
@@ -74,29 +77,24 @@ func (p *proxy) serve(conn net.Conn) error {
 		clientConn: conn,
 		logger: p.logger.WithField("id", uuid.New()),
 		ctx: ctx,
-		dialer: URLDialer,
+		dialer: URLDialer(p.dialer),
 	}
 
-	addr, _, err := getOriginalIPDst(conn.(*net.TCPConn))
-	if err == nil { // Detect iptables
-		p.logger.Debugf("detect iptables")
-		session.dialer = func(ctx context.Context, req *http.Request) (net.Conn, error) {
-			return p.dialer.DialContext(ctx, "tcp", addr.String())
-		}
+	// Try to detect tls connection reading one byte of the handshake
+	var buf [1]byte
+	_, err := conn.Read(buf[:])
+	if err != nil {
+		return err
+	}
+	session.clientConn = &wrappedTCPConn{
+		Conn: conn,
+		reader: io.MultiReader(bytes.NewReader(buf[:1]), conn),
+	}
 
-		var buf [1]byte
-		_, err := conn.Read(buf[:])
+	if buf[0] == 0x16 { // TLS handshake
+		err := p.tlsBridge(session)
 		if err != nil {
 			return err
-		}
-		session.clientConn = &wrappedTCPConn{
-			Conn: conn,
-			reader: io.MultiReader(bytes.NewReader(buf[:1]), conn),
-		}
-
-		if buf[0] == 0x16 { // TLS handshake
-			p.logger.Debugf("detect ssl connection")
-			return p.tlsInterceptor.Intercept(session, p.dialer, addr)
 		}
 	}
 
@@ -104,9 +102,15 @@ func (p *proxy) serve(conn net.Conn) error {
 	if err != nil {
 		return err
 	}
-	if addr != nil {
-		p.logger.Debugf("detect plain text connection")
-		req = ToProxy(req)
+
+	if p.logger.Level <= logrus.DebugLevel {
+		data, _ := httputil.DumpRequest(req, false)
+		p.logger.Writer().Write([]byte(data))
+	}
+
+	req = ToProxy(req)
+	if buf[0] == 0x16 && req.URL.Port() == "" {
+		req.URL.Host = req.URL.Host + ":443"
 	}
 	return session.Serve(req)
 }
@@ -160,9 +164,9 @@ func WithConnectTimeout(t time.Duration) proxyOptionFn {
 	}
 }
 
-func WithTLSInterceptor(tlsInterceptor TLSInterceptor) proxyOptionFn {
+func WithTLSConfig(tlsConfig *tls.Config) proxyOptionFn {
 	return func(p *proxy) {
-		p.tlsInterceptor = tlsInterceptor
+		p.tlsConfig = tlsConfig
 	}
 }
 
@@ -177,7 +181,6 @@ var DefaultOptions = []Option{
 	WithCache(cache.New()),
 	WithConnectTimeout(10*time.Second),
 	WithConnectHandler(PassthroughConnectHandler),
-	WithTLSInterceptor(TLSInterceptorFn(PassthroughTLSInterceptor)),
 	WithDialer(&net.Dialer{}),
 }
 

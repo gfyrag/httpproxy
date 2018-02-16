@@ -16,10 +16,7 @@ var (
 )
 
 func PrimaryKey(r *http.Request) string {
-	strippedUrl := *r.URL
-	strippedUrl.RawQuery = ""
-	res := fmt.Sprintf("%s:%s", r.Method, strippedUrl.String())
-	return res
+	return fmt.Sprintf("%s:%s:%s", r.Method, r.URL.Host, r.URL.Path)
 }
 
 type Doer interface {

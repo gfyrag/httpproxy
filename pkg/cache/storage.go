@@ -11,7 +11,6 @@ import (
 	"bufio"
 	"github.com/blang/vfs"
 	"github.com/blang/vfs/memfs"
-	"github.com/davecgh/go-spew/spew"
 )
 
 type Recipe struct {
@@ -159,7 +158,6 @@ func (s *vfsStorage) Insert(key string, r *Recipe) error {
 	defer responseFile.Close()
 	err = r.Response.Write(responseFile)
 	if err != nil {
-		spew.Dump(err)
 		return err
 	}
 

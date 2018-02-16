@@ -13,7 +13,6 @@ import (
 	"github.com/gfyrag/httpproxy/pkg/cache"
 	"io"
 	"strings"
-	"crypto/tls"
 )
 
 type ConnectHandler interface {
@@ -35,27 +34,22 @@ var PassthroughConnectHandler ConnectHandlerFn = func(session *Session, req *htt
 	return nil
 }
 
-type SSLBump struct {
-	Config *tls.Config
-}
+type TLSBridge struct {}
 
-func (b *SSLBump) Serve(session *Session, connectRequest *http.Request) (err error) {
-	session.clientConn = tls.Server(session.clientConn, b.Config)
+func (b *TLSBridge) Serve(session *Session, connectRequest *http.Request) error {
+	err := session.proxy.tlsBridge(session)
+	if err != nil {
+		return err
+	}
 
 	req, err := http.ReadRequest(bufio.NewReader(session.clientConn))
 	if err != nil {
 		return err
 	}
+
+	req.URL.Host = connectRequest.URL.Host
 	req = ToProxy(req)
 
-	originalDialer := session.dialer
-	session.dialer = func(ctx context.Context, req *http.Request) (net.Conn, error) {
-		conn, err := originalDialer(ctx, connectRequest)
-		if err != nil {
-			return nil, err
-		}
-		return tls.Client(conn, b.Config), nil
-	}
 	return session.handleRequest(req)
 }
 
@@ -73,7 +67,6 @@ func (s *Session) doRequest(req *http.Request, remoteConn net.Conn) (*http.Respo
 		data, _ := httputil.DumpRequest(req, false)
 		s.logger.Logger.Writer().Write([]byte(data))
 	}
-
 	err := req.Write(remoteConn)
 	if err != nil {
 		return nil, errors.Wrap(err, "write request to remote")
@@ -82,7 +75,6 @@ func (s *Session) doRequest(req *http.Request, remoteConn net.Conn) (*http.Respo
 	if err != nil {
 		return nil, errors.Wrap(err, "read response from remote")
 	}
-
 	if s.logger.Level <= logrus.DebugLevel {
 		data, _ := httputil.DumpResponse(resp, false)
 		s.logger.Logger.Writer().Write([]byte(data))
@@ -134,6 +126,8 @@ func (s *Session) handleRequest(req *http.Request) error {
 					s.logger.Debugf("use stored response")
 				case cache.NoCachableResponseEvent:
 					s.logger.Debugf("response not cachable")
+				case cache.CachingResponseEvent:
+					s.logger.Debugf("caching response")
 				default:
 					s.logger.Debugf("Unknown event: %#T", e)
 				}

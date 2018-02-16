@@ -8,7 +8,9 @@ import "net/http"
 func ToProxy(req *http.Request) *http.Request {
 	cp := new(http.Request)
 	*cp = *req
-	cp.URL.Host = req.Host
+	if req.URL.Host == "" {
+		cp.URL.Host = req.Host
+	}
 	cp.Host = ""
 	cp.Header.Del("Host")
 	return cp

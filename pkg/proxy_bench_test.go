@@ -101,9 +101,7 @@ func BenchmarkHTTPSBumpRSASpeed(b *testing.B) {
 	tlsConfig, err := RSA()
 	l := MustListen(8080)
 	defer l.Close()
-	proxy := Proxy(l, WithConnectHandler(&SSLBump{
-		Config: tlsConfig,
-	}))
+	proxy := Proxy(l, WithConnectHandler(&TLSBridge{}), WithTLSConfig(tlsConfig))
 	go proxy.Run()
 	httpsBackend := httptest.NewTLSServer(h)
 	client := &http.Client{
@@ -147,9 +145,7 @@ func BenchmarkHTTPSBumpECDSASpeed(b *testing.B) {
 	}
 	l := MustListen(8080)
 	defer l.Close()
-	proxy := Proxy(l, WithConnectHandler(&SSLBump{
-		Config: tlsConfig,
-	}))
+	proxy := Proxy(l, WithTLSConfig(tlsConfig), WithConnectHandler(&TLSBridge{}))
 	go proxy.Run()
 	httpsBackend := httptest.NewTLSServer(h)
 	client := &http.Client{

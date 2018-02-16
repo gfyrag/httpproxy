@@ -100,6 +100,14 @@ func RSA() (*tls.Config, error) {
 	return managedCertPool(privateKey, privateKeyBytes, privateKey.Public(), x509.SHA256WithRSA), nil
 }
 
+func MustRSA() *tls.Config {
+	rsa, err := RSA()
+	if err != nil {
+		panic(err)
+	}
+	return rsa
+}
+
 func ECDSA() (*tls.Config, error) {
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

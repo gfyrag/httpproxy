@@ -14,6 +14,7 @@ import (
 	"os"
 	"net"
 	"fmt"
+	"time"
 )
 
 func init() {
@@ -34,9 +35,7 @@ func TestSecuredWebSocket(t *testing.T) {
 	assert.NoError(t, err)
 	l := MustListenRandom()
 	defer l.Close()
-	proxy := Proxy(l, WithConnectHandler(&SSLBump{
-		Config: tlsConfig,
-	}))
+	proxy := Proxy(l, WithTLSConfig(tlsConfig), WithConnectHandler(&TLSBridge{}))
 	go proxy.Run()
 	wssBackend := httptest.NewTLSServer(ws)
 
@@ -55,6 +54,7 @@ func TestSecuredWebSocket(t *testing.T) {
 }
 
 // https://www.karlrupp.net/en/computer/nat_tutorial
+// https://connect.ed-diamond.com/GNU-Linux-Magazine/GLMFHS-041/Introduction-a-Netfilter-et-iptables
 func TestProxy(t *testing.T) {
 
 	// To avoid infinite recursion with iptables, we choose a network interface which is not "lo"
@@ -91,6 +91,7 @@ func TestProxy(t *testing.T) {
 			ExpectedStatus: 200,
 			Options: []Option {
 				WithDialer(&net.Dialer{
+					Timeout: 5*time.Second,
 					LocalAddr: &net.TCPAddr{
 						IP: addr.(*net.IPNet).IP,
 					},
@@ -99,16 +100,18 @@ func TestProxy(t *testing.T) {
 			Transparent: true,
 		},
 		{
-			Name: "https backend with explicit proxy",
+			Name: "https backend with transparent proxy",
 			Backend: httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})),
 			ExpectedStatus: 200,
 			Transparent: true,
 			Options: []Option {
 				WithDialer(&net.Dialer{
+					Timeout: 5*time.Second,
 					LocalAddr: &net.TCPAddr{
 						IP: addr.(*net.IPNet).IP,
 					},
 				}),
+				WithTLSConfig(MustRSA()),
 			},
 		},
 		{
@@ -121,13 +124,8 @@ func TestProxy(t *testing.T) {
 			Backend: httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})),
 			ExpectedStatus: 200,
 			Options: []Option {
-				WithConnectHandler(&SSLBump{
-					Config: func() *tls.Config {
-						tlsConfig, err := RSA()
-						assert.NoError(t, err)
-						return tlsConfig
-					}(),
-				}),
+				WithTLSConfig(MustRSA()),
+				WithConnectHandler(&TLSBridge{}),
 			},
 		},
 		{
