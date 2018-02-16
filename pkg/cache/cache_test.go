@@ -10,7 +10,6 @@ import (
 	"time"
 	"io/ioutil"
 	"github.com/Sirupsen/logrus"
-	"github.com/pborman/uuid"
 	"fmt"
 	"bytes"
 )
@@ -260,9 +259,7 @@ func TestConcurrentAccess(t *testing.T) {
 	r, w := io.Pipe()
 	go func(w *io.PipeWriter) {
 		defer w.Close()
-		assert.NoError(t, c.
-			WithOptions(WithLogger(logrus.StandardLogger().WithField("id", uuid.New()))).
-			Serve(w, srv.Client(), req))
+		assert.NoError(t, c.Serve(w, srv.Client(), req))
 	}(w)
 
 	<-time.After(100*time.Millisecond)
@@ -274,9 +271,7 @@ func TestConcurrentAccess(t *testing.T) {
 	r, w = io.Pipe()
 	go func(w *io.PipeWriter) {
 		defer w.Close()
-		assert.NoError(t, c.
-			WithOptions(WithLogger(logrus.StandardLogger().WithField("id", uuid.New()))).
-			Serve(w, srv.Client(), req))
+		assert.NoError(t, c.Serve(w, srv.Client(), req))
 	}(w)
 
 	rsp, err := http.ReadResponse(bufio.NewReader(r), req)

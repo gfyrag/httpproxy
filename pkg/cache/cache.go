@@ -7,7 +7,6 @@ import (
 	"io"
 	"sync"
 	"io/ioutil"
-	"github.com/Sirupsen/logrus"
 	"errors"
 )
 
@@ -19,7 +18,6 @@ func PrimaryKey(r *http.Request) string {
 	strippedUrl := *r.URL
 	strippedUrl.RawQuery = ""
 	return fmt.Sprintf("%s:%s", r.Method, strippedUrl.String())
-	//return base64.StdEncoding.EncodeToString([]byte(primaryKey))
 }
 
 type Doer interface {
@@ -35,7 +33,7 @@ type Cache struct {
 	validators Validators
 	mu *sync.Mutex
 	requestsMu map[string]*sync.Mutex
-	logger Logger
+	observer Observer
 }
 
 func (c *Cache) Storage() Storage {
@@ -93,6 +91,7 @@ func (c *Cache) validationRequest(w io.Writer, cl Doer, recipe *Recipe) (*http.R
 		return nil, ErrValidationFailed
 	}
 	if rsp.StatusCode == http.StatusNotModified {
+		c.observer.Observe(Revalidated(valid))
 		// Update stored response
 		// See section 4.3.4
 		recipe.Response.Header = rsp.Header
@@ -111,11 +110,6 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 
 	stripHopByHopHeaders(req)
 
-	c.logger.Debugf("serve request")
-	defer func() {
-		c.logger.Debugf("request finished")
-	}()
-
 	var (
 		rsp *http.Response
 		err error
@@ -128,7 +122,7 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 
 	err = PermitCache(req)
 	if err != nil {
-		c.logger.Debugf("request does not allow cache: %s", err)
+		c.observer.Observe(NoCachableRequest(req, err))
 		rsp, err = doer.Do(req)
 		if err != nil {
 			return err
@@ -147,31 +141,30 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 		if err != nil {
 			return err
 		}
-
-
+		if recipe == nil {
+			c.observer.Observe(CacheMiss(req))
+		} else {
+			c.observer.Observe(CacheHit(req))
+		}
 
 		now := time.Now().UTC()
 
 		if IsConditionalRequest(req) {
-
-			if recipe == nil {
-				c.logger.Debugf("forward conditional request as we have no matching recipe")
-			} else {
+			if recipe != nil {
 				if c.validators.Validate(recipe) {
-					c.logger.Debugf("conditional request validated")
 					rsp = recipe.Response
 					if rsp.Body != nil {
 						rsp.Body.Close()
 						rsp.Body = nil
 					}
 					recipe.Response.StatusCode = http.StatusNotModified
+					c.observer.Observe(RevalidatedFromCache(req))
 				} else {
-					c.logger.Debugf("conditional request failed")
+					c.observer.Observe(RevalidatedFromCacheFailed(req))
 				}
 			}
 		} else if recipe != nil {
 			if noCacheOnRequest {
-				c.logger.Debugf("request queried no-cache")
 				// the request contain the no-cache cache directive
 				// (Section 5.2.2.2), we have to revalidate
 				rsp, err = c.validationRequest(w, doer, recipe)
@@ -180,20 +173,12 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 				// (Section 5.2.2.2), we have to revalidate
 				noCacheOnResponse, err := NoCache(recipe.Response)
 				if err == nil {
-					if noCacheOnResponse {
-						c.logger.Debugf("response specified no-cache")
-					}
-					expired := Expired(recipe.Response, now)
-					if expired {
-						c.logger.Debugf("response expired")
-					}
-					if noCacheOnResponse || expired {
-						c.logger.Debugf("revalidate request")
+					if noCacheOnResponse || Expired(recipe.Response, now) {
 						rsp, err = c.validationRequest(w, doer, recipe)
 					} else {
-						c.logger.Debugf("use stored response")
 						rsp = recipe.Response
 						rsp.Header.Set("Age", fmt.Sprintf("%d", int64(Age(rsp, recipe.RequestDate, recipe.ResponseDate).Seconds())))
+						c.observer.Observe(ServedFromCache(req))
 					}
 				}
 			}
@@ -203,7 +188,6 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 		}
 
 		if rsp == nil {
-			c.logger.Debugf("unable to find response, contact origin")
 			rsp, err = doer.Do(req)
 			if err != nil {
 				return err
@@ -222,7 +206,7 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 				wg.Add(1)
 				defer wg.Wait()
 
-				c.logger.Debugf("caching response")
+				c.observer.Observe(CachingResponse(req))
 				stripHopByHopHeaders(rsp)
 				var w *io.PipeWriter
 				rspCp := new(http.Response)
@@ -240,23 +224,21 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 						ResponseDate: now,
 					})
 					if err != nil {
-						c.logger.Errorf("error caching response: %s", err)
+						c.observer.Observe(CachingResponseError(req, err))
 						io.Copy(ioutil.Discard, rspCp.Body)
 					}
 				}()
 			} else {
-				c.logger.Debugf("response not cachable: %s", permitCache)
+				c.observer.Observe(NoCachableResponse(req, permitCache))
 			}
 		}
 
 		// Per RFC7231 section 7.1.1.2, the 'Date' header is not absolutely mandatory
 		if Date(rsp).IsZero() {
-			c.logger.Debugf("response does not contains any 'Date', add the generated once")
 			rsp.Header.Set("Date", now.Format(http.TimeFormat))
 		}
 	}
 
-	c.logger.Debugf("write response")
 	return rsp.Write(w)
 }
 
@@ -289,9 +271,9 @@ func WithStorage(storage Storage) cacheOptionFn {
 	}
 }
 
-func WithLogger(logger Logger) cacheOptionFn {
+func WithObserver(observer Observer) cacheOptionFn {
 	return func(c *Cache) {
-		c.logger = logger
+		c.observer = observer
 	}
 }
 
@@ -299,7 +281,7 @@ var (
 	DefaultOptions = []cacheOption{
 		WithValidators(ifModifiedSince{}, ifNoneMatch{}),
 		WithStorage(MemStorage()),
-		WithLogger(logrus.StandardLogger()),
+		WithObserver(NoOpObserver),
 	}
 )
 

@@ -75,7 +75,28 @@ func (r *Session) handleRequest(req *http.Request) error {
 		return nil
 	default:
 		return r.proxy.cache.
-			WithOptions(cache.WithLogger(r.logger)).
+			WithOptions(cache.WithObserver(cache.ObserverFn(func(e cache.Event) {
+				switch ee := e.(type) {
+				case cache.CacheHitEvent:
+					r.logger.Debugf("cache hit")
+				case cache.CacheMissEvent:
+					r.logger.Debugf("cache miss")
+				case cache.NoCachableRequestEvent:
+					r.logger.Debugf("request does not allow cache: %s", ee.Err)
+				case cache.RevalidatedEvent:
+					r.logger.Debugf("remote validate stored response")
+				case cache.RevalidatedFromCacheEvent:
+					r.logger.Debugf("conditional request validated")
+				case cache.RevalidatedFromCacheFailedEvent:
+					r.logger.Debugf("conditional request failed")
+				case cache.ServedFromCacheEvent:
+					r.logger.Debugf("use stored response")
+				case cache.NoCachableResponseEvent:
+					r.logger.Debugf("response not cachable")
+				default:
+					r.logger.Debugf("Unknown event: %#T", e)
+				}
+			}))).
 			Serve(r.clientConn, cache.DoerFn(r.doRequest), req)
 	}
 }
