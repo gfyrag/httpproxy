@@ -64,6 +64,15 @@ func (r *Session) doRequest(req *http.Request) (*http.Response, error) {
 }
 
 func (r *Session) handleRequest(req *http.Request) error {
+
+	//url, err := url.Parse(req.URL)
+	//if err != nil {
+	//	return err
+	//}
+	//if url.Host == "" { // Transparent request
+	//	req.URL =
+	//}
+
 	switch {
 	case strings.ToLower(req.Header.Get("Upgrade")) == "websocket":
 		err := r.dialRemote()
@@ -112,7 +121,7 @@ func (r *Session) handleTunneling() error {
 	if err != nil {
 		return err
 	}
-	return r.proxy.connectHandler.Serve(r)
+	return r.proxy.tlsInterceptor.Serve(r)
 }
 
 func (r *Session) Serve() error {

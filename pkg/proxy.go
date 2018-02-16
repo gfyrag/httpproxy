@@ -11,9 +11,11 @@ import (
 	"context"
 	"github.com/gfyrag/httpproxy/pkg/cache"
 	"net/http/httputil"
+	"net"
+	"net/url"
 )
 
-type ConnectHandler interface {
+type TLSInterceptor interface {
 	Serve(*Session) error
 }
 type ConnectHandlerFn func(*Session) error
@@ -22,7 +24,7 @@ func (fn ConnectHandlerFn) Serve(r *Session) error {
 	return fn(r)
 }
 
-var DefaultConnectHandler ConnectHandlerFn = func(request *Session) (err error) {
+var PassthoughTLSInterceptor ConnectHandlerFn = func(request *Session) (err error) {
 	err = request.dialRemote()
 	if err != nil {
 		return err
@@ -56,14 +58,26 @@ func (b *SSLBump) Serve(r *Session) error {
 }
 
 type proxy struct {
-	connectHandler ConnectHandler
+	tlsInterceptor TLSInterceptor
 	cache          *cache.Cache
 	logger         *logrus.Logger
 	connectTimeout time.Duration
+	listener net.Listener
 }
 
-func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (p *proxy) Url() *url.URL {
+	url, err := url.Parse("http://" + p.listener.Addr().String())
+	if err != nil {
+		panic(err)
+	}
+	return url
+}
 
+func (p *proxy) serve(conn net.Conn) error {
+	r, err := http.ReadRequest(bufio.NewReader(conn))
+	if err != nil {
+		return err
+	}
 	id := uuid.New()
 	logger := p.logger.WithField("id", id)
 	logger.Debugf("serve request %s", r.URL)
@@ -73,34 +87,29 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		logger.Logger.Writer().Write([]byte(data))
 	}
 
-	hi, ok := w.(http.Hijacker)
-	if !ok {
-		panic("conn can't be hijacked")
-	}
-
-	clientConn, _, err := hi.Hijack()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	}
-	defer clientConn.Close()
-
 	ctx := context.Background()
 	if p.connectTimeout != 0 {
 		ctx, _ = context.WithDeadline(ctx, time.Now().Add(p.connectTimeout))
 	}
-
-	req := &Session{
+	return (&Session{
 		proxy: p,
-		clientConn: clientConn,
+		clientConn: conn,
 		Request: r,
 		logger: logger,
 		ctx: ctx,
-	}
+	}).Serve()
+}
 
-	err = req.Serve()
-	if err != nil {
-		logger.Debugf("serve request error: %s", err)
+func (p *proxy) Run() error {
+	for {
+		conn, err := p.listener.Accept()
+		if err != nil {
+			return err
+		}
+		go func() {
+			defer conn.Close()
+			p.serve(conn)
+		}()
 	}
 }
 
@@ -124,9 +133,9 @@ func WithCache(c *cache.Cache) proxyOptionFn {
 	}
 }
 
-func WithConnectHandler(c ConnectHandler) proxyOptionFn {
+func WithTLSInterceptor(c TLSInterceptor) proxyOptionFn {
 	return func(p *proxy) {
-		p.connectHandler = c
+		p.tlsInterceptor = c
 	}
 }
 
@@ -139,12 +148,14 @@ func WithConnectTimeout(t time.Duration) proxyOptionFn {
 var DefaultOptions = []Option{
 	WithLogger(logrus.StandardLogger()),
 	WithCache(cache.New()),
-	WithConnectHandler(DefaultConnectHandler),
+	WithTLSInterceptor(PassthoughTLSInterceptor),
 	WithConnectTimeout(10*time.Second),
 }
 
-func Proxy(opts ...Option) *proxy {
-	p := &proxy{}
+func Proxy(listener net.Listener, opts ...Option) *proxy {
+	p := &proxy{
+		listener: listener,
+	}
 	for _, o := range append(DefaultOptions, opts...) {
 		o.apply(p)
 	}

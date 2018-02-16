@@ -4,7 +4,6 @@ import (
 	"testing"
 	"net/http/httptest"
 	"net/http"
-	"net/url"
 	"crypto/tls"
 	"github.com/Sirupsen/logrus"
 	"io/ioutil"
@@ -23,16 +22,14 @@ func BenchmarkHTTPSpeed(b *testing.B) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(data) // 10MB
 	})
-	proxy := &proxy{}
+	l := MustListen(8080)
+	defer l.Close()
+	proxy := Proxy(l)
+	go proxy.Run()
 	httpBackend := httptest.NewServer(h)
-	srv := httptest.NewServer(proxy)
-	proxyUrl, err := url.Parse(srv.URL)
-	if err != nil {
-		b.Error(err)
-	}
 	client := &http.Client{
 		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyUrl),
+			Proxy: http.ProxyURL(proxy.Url()),
 			TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
@@ -50,9 +47,11 @@ func BenchmarkHTTPSpeed(b *testing.B) {
 		if err != nil {
 			b.Error(err)
 		}
-		_, err = io.Copy(ioutil.Discard, res.Body)
-		if err != nil {
-			b.Error(err)
+		if err == nil {
+			_, err = io.Copy(ioutil.Discard, res.Body)
+			if err != nil {
+				b.Error(err)
+			}
 		}
 	}
 }
@@ -61,16 +60,14 @@ func BenchmarkHTTPSForwardSpeed(b *testing.B) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(make([]byte, 1024*1024*10)) // 10MB
 	})
-	proxy := &proxy{}
+	l := MustListen(8080)
+	defer l.Close()
+	proxy := Proxy(l)
+	go proxy.Run()
 	httpsBackend := httptest.NewTLSServer(h)
-	srv := httptest.NewServer(proxy)
-	proxyUrl, err := url.Parse(srv.URL)
-	if err != nil {
-		b.Error(err)
-	}
 	client := &http.Client{
 		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyUrl),
+			Proxy: http.ProxyURL(proxy.Url()),
 			TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
@@ -88,9 +85,11 @@ func BenchmarkHTTPSForwardSpeed(b *testing.B) {
 		if err != nil {
 			b.Error(err)
 		}
-		_, err = io.Copy(ioutil.Discard, res.Body)
-		if err != nil {
-			b.Error(err)
+		if err == nil {
+			_, err = io.Copy(ioutil.Discard, res.Body)
+			if err != nil {
+				b.Error(err)
+			}
 		}
 	}
 }
@@ -100,20 +99,16 @@ func BenchmarkHTTPSBumpRSASpeed(b *testing.B) {
 		w.Write(make([]byte, 1024*1024*10)) // 10MB
 	})
 	tlsConfig, err := RSA()
-	proxy := &proxy{
-		connectHandler: &SSLBump{
-			Config: tlsConfig,
-		},
-	}
+	l := MustListen(8080)
+	defer l.Close()
+	proxy := Proxy(l, WithTLSInterceptor(&SSLBump{
+		Config: tlsConfig,
+	}))
+	go proxy.Run()
 	httpsBackend := httptest.NewTLSServer(h)
-	srv := httptest.NewServer(proxy)
-	proxyUrl, err := url.Parse(srv.URL)
-	if err != nil {
-		b.Error(err)
-	}
 	client := &http.Client{
 		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyUrl),
+			Proxy: http.ProxyURL(proxy.Url()),
 			TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
@@ -131,9 +126,11 @@ func BenchmarkHTTPSBumpRSASpeed(b *testing.B) {
 		if err != nil {
 			b.Error(err)
 		}
-		_, err = io.Copy(ioutil.Discard, res.Body)
-		if err != nil {
-			b.Error(err)
+		if err == nil {
+			_, err = io.Copy(ioutil.Discard, res.Body)
+			if err != nil {
+				b.Error(err)
+			}
 		}
 	}
 }
@@ -148,20 +145,16 @@ func BenchmarkHTTPSBumpECDSASpeed(b *testing.B) {
 		b.Error(err)
 		return
 	}
-	proxy := &proxy{
-		connectHandler: &SSLBump{
-			Config: tlsConfig,
-		},
-	}
+	l := MustListen(8080)
+	defer l.Close()
+	proxy := Proxy(l, WithTLSInterceptor(&SSLBump{
+		Config: tlsConfig,
+	}))
+	go proxy.Run()
 	httpsBackend := httptest.NewTLSServer(h)
-	srv := httptest.NewServer(proxy)
-	proxyUrl, err := url.Parse(srv.URL)
-	if err != nil {
-		b.Error(err)
-	}
 	client := &http.Client{
 		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyUrl),
+			Proxy: http.ProxyURL(proxy.Url()),
 			TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
@@ -180,9 +173,11 @@ func BenchmarkHTTPSBumpECDSASpeed(b *testing.B) {
 			b.Error(err)
 			continue
 		}
-		_, err = io.Copy(ioutil.Discard, res.Body)
-		if err != nil {
-			b.Error(err)
+		if err == nil {
+			_, err = io.Copy(ioutil.Discard, res.Body)
+			if err != nil {
+				b.Error(err)
+			}
 		}
 	}
 }

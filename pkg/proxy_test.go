@@ -18,16 +18,15 @@ func init() {
 
 func TestHTTP(t *testing.T) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
-	proxy := Proxy()
+
+	l := MustListen(8080)
+	defer l.Close()
+	proxy := Proxy(l)
+	go proxy.Run()
 	httpBackend := httptest.NewServer(h)
-	srv := httptest.NewServer(proxy)
-	proxyUrl, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
 	client := &http.Client{
 		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyUrl),
+			Proxy: http.ProxyURL(proxy.Url()),
 		},
 	}
 
@@ -39,16 +38,14 @@ func TestHTTP(t *testing.T) {
 
 func TestHTTPS(t *testing.T) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
-	proxy := Proxy()
+	l := MustListen(8080)
+	defer l.Close()
+	proxy := Proxy(l)
+	go proxy.Run()
 	httpsBackend := httptest.NewTLSServer(h)
-	srv := httptest.NewServer(proxy)
-	proxyUrl, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
 	client := &http.Client{
 		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyUrl),
+			Proxy: http.ProxyURL(proxy.Url()),
 			TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
@@ -68,18 +65,16 @@ func TestHTTPSBump(t *testing.T) {
 	assert.NoError(t, err)
 
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
-	proxy := Proxy(WithConnectHandler(&SSLBump{
+	l := MustListen(8080)
+	defer l.Close()
+	proxy := Proxy(l, WithTLSInterceptor(&SSLBump{
 		Config: tlsConfig,
 	}))
+	go proxy.Run()
 	httpsBackend := httptest.NewTLSServer(h)
-	srv := httptest.NewServer(proxy)
-	proxyUrl, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
 	client := &http.Client{
 		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyUrl),
+			Proxy: http.ProxyURL(proxy.Url()),
 			TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
@@ -105,19 +100,17 @@ func TestSecuredWebSocket(t *testing.T) {
 	})
 	tlsConfig, err := RSA()
 	assert.NoError(t, err)
-	proxy := Proxy(WithConnectHandler(&SSLBump{
+	l := MustListen(8080)
+	defer l.Close()
+	proxy := Proxy(l, WithTLSInterceptor(&SSLBump{
 		Config: tlsConfig,
 	}))
+	go proxy.Run()
 	wssBackend := httptest.NewTLSServer(ws)
-	srv := httptest.NewServer(proxy)
-	proxyUrl, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	dialer := websocket.Dialer{
 		Proxy: func(*http.Request) (*url.URL, error) {
-			return proxyUrl, nil
+			return proxy.Url(), nil
 		},
 		TLSClientConfig: &tls.Config{
 			RootCAs: wssBackend.TLS.RootCAs,
@@ -130,15 +123,13 @@ func TestSecuredWebSocket(t *testing.T) {
 }
 
 func TestInvalidRemote(t *testing.T) {
-	proxy := Proxy()
-	srv := httptest.NewServer(proxy)
-	proxyUrl, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
+	l := MustListen(8080)
+	defer l.Close()
+	proxy := Proxy(l)
+	go proxy.Run()
 	client := &http.Client{
 		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyUrl),
+			Proxy: http.ProxyURL(proxy.Url()),
 		},
 	}
 

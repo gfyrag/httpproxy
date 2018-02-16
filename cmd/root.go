@@ -7,10 +7,10 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"github.com/gfyrag/httpproxy/pkg"
-	"net/http"
 	"github.com/Sirupsen/logrus"
 	"github.com/gfyrag/httpproxy/pkg/cache"
 	"crypto/tls"
+	"net"
 )
 
 var RootCmd = &cobra.Command{
@@ -63,15 +63,25 @@ var RootCmd = &cobra.Command{
 				tlsConfig.Renegotiation = tls.RenegotiateFreelyAsClient
 			default:
 				logger.Errorf("unexpected tls renegotiation value: %s", viper.GetString("tls-renegotiation"))
+				os.Exit(1)
 			}
 
-			options = append(options, httpproxy.WithConnectHandler(&httpproxy.SSLBump{
+			options = append(options, httpproxy.WithTLSInterceptor(&httpproxy.SSLBump{
 				Config: tlsConfig,
 			}))
 		}
 
+		l, err := net.ListenTCP("tcp", &net.TCPAddr{
+			Port: viper.GetInt("port"),
+		})
+		if err != nil {
+			logger.Errorf("unable to listen tcp: %s", err)
+			os.Exit(1)
+		}
+
 		logger.Infoln("Proxy started.")
-		err := http.ListenAndServe(fmt.Sprintf(":%d", viper.GetInt("port")), httpproxy.Proxy(options...))
+		proxy := httpproxy.Proxy(l, options...)
+		err = proxy.Run()
 		if err != nil {
 			logger.Error(err)
 			os.Exit(1)
@@ -94,7 +104,7 @@ func init() {
 	RootCmd.Flags().String("tls-renegotiation", "none", "Whether or not enable tls renegotiation")
 	RootCmd.Flags().Bool("ssl-bump", true, "Intercept ssl connections")
 	RootCmd.Flags().String("ssl-bump-key-type", "rsa", "Private key type")
-	RootCmd.Flags().Int("port", 3128, "Http port")
+	RootCmd.Flags().Int("port", 3128, "Listening port")
 	RootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 	viper.BindPFlags(RootCmd.Flags())
 }
