@@ -4,65 +4,45 @@ import (
 	"net/http"
 	"time"
 	"io"
-	"crypto/tls"
 	"bufio"
 	"github.com/Sirupsen/logrus"
 	"github.com/pborman/uuid"
 	"context"
 	"github.com/gfyrag/httpproxy/pkg/cache"
-	"net/http/httputil"
 	"net"
 	"net/url"
+	"bytes"
 )
 
 type TLSInterceptor interface {
-	Serve(*Session) error
+	Intercept(*Session, *net.Dialer, *net.TCPAddr) error
 }
-type ConnectHandlerFn func(*Session) error
+type TLSInterceptorFn func(*Session, *net.Dialer, *net.TCPAddr) error
 
-func (fn ConnectHandlerFn) Serve(r *Session) error {
-	return fn(r)
+func (fn TLSInterceptorFn) Intercept(s *Session, dialer *net.Dialer, remoteAddr *net.TCPAddr) error {
+	return fn(s, dialer, remoteAddr)
 }
 
-var PassthoughTLSInterceptor ConnectHandlerFn = func(request *Session) (err error) {
-	err = request.dialRemote()
+func PassthroughTLSInterceptor(session *Session, dialer *net.Dialer, remoteAddr *net.TCPAddr) error {
+	remoteConn, err := dialer.DialContext(session.ctx, "tcp", remoteAddr.String())
 	if err != nil {
 		return err
 	}
-	go io.Copy(request.remoteConn, request.clientConn)
-	io.Copy(request.clientConn, request.remoteConn)
+	defer remoteConn.Close()
+
+	go io.Copy(remoteConn, session.clientConn)
+	io.Copy(session.clientConn, remoteConn)
 	return nil
-}
-
-type SSLBump struct {
-	Config *tls.Config
-}
-
-func (b *SSLBump) Serve(r *Session) error {
-	r.clientConn = tls.Server(r.clientConn, b.Config)
-
-	req, err := http.ReadRequest(bufio.NewReader(r.clientConn))
-	if err != nil {
-		return err
-	}
-	originalDialer := r.dialer
-	r.dialer = func(ctx context.Context) error {
-		err := originalDialer(ctx)
-		if err != nil {
-			return err
-		}
-		r.remoteConn = tls.Client(r.remoteConn, b.Config)
-		return nil
-	}
-	return r.handleRequest(req)
 }
 
 type proxy struct {
 	tlsInterceptor TLSInterceptor
+	connectHandler ConnectHandler
 	cache          *cache.Cache
 	logger         *logrus.Logger
 	connectTimeout time.Duration
-	listener net.Listener
+	listener       net.Listener
+	dialer *net.Dialer
 }
 
 func (p *proxy) Url() *url.URL {
@@ -73,31 +53,62 @@ func (p *proxy) Url() *url.URL {
 	return url
 }
 
-func (p *proxy) serve(conn net.Conn) error {
-	r, err := http.ReadRequest(bufio.NewReader(conn))
-	if err != nil {
-		return err
-	}
-	id := uuid.New()
-	logger := p.logger.WithField("id", id)
-	logger.Debugf("serve request %s", r.URL)
+type wrappedTCPConn struct {
+	net.Conn
+	reader io.Reader
+}
 
-	if logger.Level <= logrus.DebugLevel {
-		data, _ := httputil.DumpRequest(r, false)
-		logger.Logger.Writer().Write([]byte(data))
-	}
+func (c *wrappedTCPConn) Read(b []byte) (int, error) {
+	return c.reader.Read(b)
+}
+
+func (p *proxy) serve(conn net.Conn) error {
 
 	ctx := context.Background()
 	if p.connectTimeout != 0 {
 		ctx, _ = context.WithDeadline(ctx, time.Now().Add(p.connectTimeout))
 	}
-	return (&Session{
+
+	session := &Session{
 		proxy: p,
 		clientConn: conn,
-		Request: r,
-		logger: logger,
+		logger: p.logger.WithField("id", uuid.New()),
 		ctx: ctx,
-	}).Serve()
+		dialer: URLDialer,
+	}
+
+	addr, _, err := getOriginalIPDst(conn.(*net.TCPConn))
+	if err == nil { // Detect iptables
+		p.logger.Debugf("detect iptables")
+		session.dialer = func(ctx context.Context, req *http.Request) (net.Conn, error) {
+			return p.dialer.DialContext(ctx, "tcp", addr.String())
+		}
+
+		var buf [1]byte
+		_, err := conn.Read(buf[:])
+		if err != nil {
+			return err
+		}
+		session.clientConn = &wrappedTCPConn{
+			Conn: conn,
+			reader: io.MultiReader(bytes.NewReader(buf[:1]), conn),
+		}
+
+		if buf[0] == 0x16 { // TLS handshake
+			p.logger.Debugf("detect ssl connection")
+			return p.tlsInterceptor.Intercept(session, p.dialer, addr)
+		}
+	}
+
+	req, err := http.ReadRequest(bufio.NewReader(session.clientConn))
+	if err != nil {
+		return err
+	}
+	if addr != nil {
+		p.logger.Debugf("detect plain text connection")
+		req = ToProxy(req)
+	}
+	return session.Serve(req)
 }
 
 func (p *proxy) Run() error {
@@ -108,9 +119,13 @@ func (p *proxy) Run() error {
 		}
 		go func() {
 			defer conn.Close()
-			p.serve(conn)
+			err := p.serve(conn)
+			if err != nil {
+				p.logger.Debugf("Error handling request: %s", err)
+			}
 		}()
 	}
+	return nil
 }
 
 type Option interface {
@@ -133,9 +148,9 @@ func WithCache(c *cache.Cache) proxyOptionFn {
 	}
 }
 
-func WithTLSInterceptor(c TLSInterceptor) proxyOptionFn {
+func WithConnectHandler(c ConnectHandler) proxyOptionFn {
 	return func(p *proxy) {
-		p.tlsInterceptor = c
+		p.connectHandler = c
 	}
 }
 
@@ -145,11 +160,25 @@ func WithConnectTimeout(t time.Duration) proxyOptionFn {
 	}
 }
 
+func WithTLSInterceptor(tlsInterceptor TLSInterceptor) proxyOptionFn {
+	return func(p *proxy) {
+		p.tlsInterceptor = tlsInterceptor
+	}
+}
+
+func WithDialer(dialer *net.Dialer) proxyOptionFn {
+	return func(p *proxy) {
+		p.dialer = dialer
+	}
+}
+
 var DefaultOptions = []Option{
 	WithLogger(logrus.StandardLogger()),
 	WithCache(cache.New()),
-	WithTLSInterceptor(PassthoughTLSInterceptor),
 	WithConnectTimeout(10*time.Second),
+	WithConnectHandler(PassthroughConnectHandler),
+	WithTLSInterceptor(TLSInterceptorFn(PassthroughTLSInterceptor)),
+	WithDialer(&net.Dialer{}),
 }
 
 func Proxy(listener net.Listener, opts ...Option) *proxy {

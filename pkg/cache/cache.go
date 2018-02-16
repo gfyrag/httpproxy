@@ -11,13 +11,15 @@ import (
 )
 
 var (
+	ErrInvalidRequest = errors.New("invalid request")
 	ErrValidationFailed = errors.New("validation failed")
 )
 
 func PrimaryKey(r *http.Request) string {
 	strippedUrl := *r.URL
 	strippedUrl.RawQuery = ""
-	return fmt.Sprintf("%s:%s", r.Method, strippedUrl.String())
+	res := fmt.Sprintf("%s:%s", r.Method, strippedUrl.String())
+	return res
 }
 
 type Doer interface {
@@ -107,6 +109,10 @@ func (c *Cache) validationRequest(w io.Writer, cl Doer, recipe *Recipe) (*http.R
 // See RFC7234 section 4
 // TODO: Serve stale responses (See RFC7234 section 4.2.4)
 func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
+
+	if req.URL.Host == "" {
+		return ErrInvalidRequest
+	}
 
 	stripHopByHopHeaders(req)
 

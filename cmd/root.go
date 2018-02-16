@@ -66,7 +66,7 @@ var RootCmd = &cobra.Command{
 				os.Exit(1)
 			}
 
-			options = append(options, httpproxy.WithTLSInterceptor(&httpproxy.SSLBump{
+			options = append(options, httpproxy.WithConnectHandler(&httpproxy.SSLBump{
 				Config: tlsConfig,
 			}))
 		}

@@ -18,7 +18,7 @@ func init() {
 	logrus.SetLevel(logrus.DebugLevel)
 }
 
-func TestCacheAccept(t *testing.T) {
+func TestCache(t *testing.T) {
 
 	type Request struct {
 		Header http.Header
