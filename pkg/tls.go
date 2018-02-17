@@ -20,32 +20,71 @@ import (
 // https://ericchiang.github.io/post/go-tls/
 //
 
-func caCert() *x509.Certificate {
+func serialNumber() *big.Int {
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
 	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
 	if err != nil {
 		panic(err)
 	}
+	return serialNumber
+}
 
-	tpl := &x509.Certificate{
-		SerialNumber:          serialNumber,
+func CATemplate() *x509.Certificate {
+	return &x509.Certificate{
+		SerialNumber:          serialNumber(),
 		Subject:               pkix.Name{
 			CommonName: "httpproxy",
 		},
 		NotBefore:             time.Now(),
 		NotAfter:              time.Now().Add(time.Hour*24*365),
 		BasicConstraintsValid: true,
+		IsCA: true,
+		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
 	}
-	tpl.IsCA = true
-	tpl.KeyUsage = x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature
-	tpl.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
-	tpl.IPAddresses = []net.IP{net.ParseIP("127.0.0.1")}
-	return tpl
 }
 
-func managedCertPool(privateKey crypto.Signer, privateKeyBytes []byte, publicKey crypto.PublicKey, signatureAlgorithm x509.SignatureAlgorithm) *tls.Config {
-	baseTpl := caCert()
-	baseTpl.SignatureAlgorithm = signatureAlgorithm
+func CertTemplate(cn string) *x509.Certificate {
+	return &x509.Certificate{
+		SerialNumber: serialNumber(),
+		Subject: pkix.Name{
+			CommonName: cn,
+		},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(time.Hour*24*365),
+		SubjectKeyId: []byte{1, 2, 3, 4, 6},
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+}
+
+func CACert(privateKey crypto.Signer, tpl *x509.Certificate) ([]byte, error) {
+	return x509.CreateCertificate(rand.Reader, tpl, tpl, privateKey.Public(), privateKey)
+}
+
+func ManagedCertPool(privateKey crypto.Signer, caCert *x509.Certificate) (*tls.Config, error) {
+
+	var (
+		privateKeyBytes []byte
+		err error
+		signatureAlgorithm x509.SignatureAlgorithm
+	)
+	switch pp := privateKey.(type) {
+	case *rsa.PrivateKey:
+		privateKeyBytes = x509.MarshalPKCS1PrivateKey(pp)
+		signatureAlgorithm = x509.SHA256WithRSA
+	case *ecdsa.PrivateKey:
+		privateKeyBytes, err = x509.MarshalECPrivateKey(pp)
+		signatureAlgorithm = x509.ECDSAWithSHA256
+	default:
+		panic("not supported")
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	caCert.SignatureAlgorithm = signatureAlgorithm
 
 	certs := make(map[string]tls.Certificate)
 	mu := sync.Mutex{}
@@ -57,16 +96,16 @@ func managedCertPool(privateKey crypto.Signer, privateKeyBytes []byte, publicKey
 
 			cert, ok := certs[info.ServerName]
 			if !ok {
-				tpl := *baseTpl
+				tpl := caCert
 				tpl.Subject = pkix.Name{
 					CommonName: info.ServerName,
 				}
 
 				certDer, err := x509.CreateCertificate(
 					rand.Reader,
-					&tpl,
-					baseTpl,
-					publicKey,
+					CertTemplate(info.ServerName),
+					caCert,
+					privateKey.Public(),
 					privateKey,
 				)
 				if err != nil {
@@ -87,7 +126,7 @@ func managedCertPool(privateKey crypto.Signer, privateKeyBytes []byte, publicKey
 			certs[info.ServerName] = cert
 			return &cert, nil
 		},
-	}
+	}, nil
 }
 
 func RSA() (*tls.Config, error) {
@@ -95,9 +134,12 @@ func RSA() (*tls.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	privateKeyBytes := x509.MarshalPKCS1PrivateKey(privateKey)
-
-	return managedCertPool(privateKey, privateKeyBytes, privateKey.Public(), x509.SHA256WithRSA), nil
+	ca := CATemplate()
+	_, err = CACert(privateKey, ca)
+	if err != nil {
+		return nil, err
+	}
+	return ManagedCertPool(privateKey, ca)
 }
 
 func MustRSA() *tls.Config {
@@ -113,9 +155,10 @@ func ECDSA() (*tls.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	privateKeyBytes, err := x509.MarshalECPrivateKey(privateKey)
+	ca := CATemplate()
+	_, err = CACert(privateKey, ca)
 	if err != nil {
 		return nil, err
 	}
-	return managedCertPool(privateKey, privateKeyBytes, privateKey.Public(), x509.ECDSAWithSHA256), nil
+	return ManagedCertPool(privateKey, ca)
 }

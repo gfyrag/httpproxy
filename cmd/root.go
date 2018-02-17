@@ -11,6 +11,8 @@ import (
 	"github.com/gfyrag/httpproxy/pkg/cache"
 	"crypto/tls"
 	"net"
+	"crypto/x509"
+	"crypto"
 )
 
 var RootCmd = &cobra.Command{
@@ -34,27 +36,43 @@ var RootCmd = &cobra.Command{
 		}
 		options = append(options, httpproxy.WithCache(cache.New(cache.WithStorage(storage))))
 
-		if viper.GetBool("ssl-bump") {
+		if viper.GetBool("tls-intercept") {
 			var (
 				tlsConfig *tls.Config
 				err error
 			)
-			switch viper.GetString("ssl-bump-key-type") {
-			case "ecdsa":
-				tlsConfig, err = httpproxy.RSA()
-			case "rsa":
-				tlsConfig, err = httpproxy.ECDSA()
-			default:
-				logger.Errorf("unexpected tls renegotiation value: %s", viper.GetString("tls-renegotiation"))
-				os.Exit(1)
+			if viper.GetString("tls-cert") == "" {
+				switch viper.GetString("tls-gen-key") {
+				case "ecdsa":
+					tlsConfig, err = httpproxy.RSA()
+				case "rsa":
+					tlsConfig, err = httpproxy.ECDSA()
+				default:
+					logger.Errorf("unexpected tls renegotiation value: %s", viper.GetString("tls-renegotiation"))
+					os.Exit(1)
+				}
+			} else {
+				cert, err := tls.LoadX509KeyPair(viper.GetString("tls-cert"), viper.GetString("tls-key"))
+				if err != nil {
+					logger.Errorf("error loading certificate: %s", err)
+					os.Exit(1)
+				}
+
+
+				ca, err := x509.ParseCertificate(cert.Certificate[0])
+				if err != nil {
+					logger.Errorf("error loading certificate: %s", err)
+					os.Exit(1)
+				}
+
+				tlsConfig, err = httpproxy.ManagedCertPool(cert.PrivateKey.(crypto.Signer), ca)
 			}
-
-			options = append(options, httpproxy.WithTLSConfig(tlsConfig))
-
 			if err != nil {
 				logger.Error(err)
 				os.Exit(1)
 			}
+
+			options = append(options, httpproxy.WithTLSConfig(tlsConfig))
 
 			switch viper.GetString("tls-renegotiation") {
 			case "none":
@@ -106,8 +124,10 @@ func init() {
 	RootCmd.Flags().String("store", "memory", "Store type")
 	RootCmd.Flags().String("store-path", "/tmp", "Store path for 'dir' store type")
 	RootCmd.Flags().String("tls-renegotiation", "none", "Whether or not enable tls renegotiation")
-	RootCmd.Flags().Bool("ssl-bump", true, "Intercept ssl connections")
-	RootCmd.Flags().String("ssl-bump-key-type", "rsa", "Private key type")
+	RootCmd.Flags().Bool("tls-intercept", true, "Intercept ssl connections")
+	RootCmd.Flags().String("tls-gen-key", "rsa", "Private key type to generate")
+	RootCmd.Flags().String("tls-cert", "", "Path to CA certificate to use")
+	RootCmd.Flags().String("tls-key", "", "Path to CA key to use")
 	RootCmd.Flags().String("addr", ":3128", "Listening addr")
 	RootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 	viper.BindPFlags(RootCmd.Flags())
