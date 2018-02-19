@@ -54,8 +54,8 @@ func (p *proxy) tlsBridge(session *Session) error {
 	}
 	session.clientConn = tls.Server(session.clientConn, p.tlsConfig)
 	session.dialer = func(d dialer) dialer {
-		return func(ctx context.Context, req *http.Request) (net.Conn, error) {
-			conn, err := d(ctx, req)
+		return func(ctx context.Context, remote string) (net.Conn, error) {
+			conn, err := d(ctx, remote)
 			if err != nil {
 				return nil, err
 			}
@@ -77,7 +77,7 @@ func (p *proxy) serve(conn net.Conn) error {
 		clientConn: conn,
 		logger: p.logger.WithField("id", uuid.New()),
 		ctx: ctx,
-		dialer: URLDialer(p.dialer),
+		dialer: DefaultDialer(p.dialer),
 	}
 
 	// Try to detect tls connection reading one byte of the handshake
@@ -108,11 +108,19 @@ func (p *proxy) serve(conn net.Conn) error {
 		p.logger.Writer().Write([]byte(data))
 	}
 
-	req = ToProxy(req)
-	if buf[0] == 0x16 && req.URL.Port() == "" {
-		req.URL.Host = req.URL.Host + ":443"
+	u := *req.URL
+	if u.Host == "" {
+		u.Host = req.Host
 	}
-	return session.Serve(req)
+	if u.Port() == "" {
+		if buf[0] == 0x16 {
+			u.Host += ":443"
+		} else {
+			u.Host += ":80"
+		}
+	}
+
+	return session.Serve(req, u.Host)
 }
 
 func (p *proxy) Run() error {

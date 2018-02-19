@@ -3,7 +3,6 @@ package httpproxy
 import (
 	"net"
 	"context"
-	"net/http"
 )
 
 func MustListenRandom() net.Listener {
@@ -24,15 +23,10 @@ func MustListenAddr(addr *net.TCPAddr) net.Listener {
 	return conn
 }
 
-type dialer func(context.Context, *http.Request) (net.Conn, error)
+type dialer func(context.Context, string) (net.Conn, error)
 
-func URLDialer(dialer *net.Dialer) dialer {
-	return func(ctx context.Context, req *http.Request) (net.Conn, error) {
-		// See RFC7230 section 5.4 for address construction
-		address := req.URL.Host
-		if req.URL.Port() == "" {
-			address += ":80"
-		}
-		return dialer.DialContext(ctx, "tcp", address)
+func DefaultDialer(dialer *net.Dialer) dialer {
+	return func(ctx context.Context, remote string) (net.Conn, error) {
+		return dialer.DialContext(ctx, "tcp", remote)
 	}
 }

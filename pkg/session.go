@@ -16,16 +16,16 @@ import (
 )
 
 type ConnectHandler interface {
-	Serve(*Session, *http.Request) error
+	Serve(*Session, *http.Request, string) error
 }
-type ConnectHandlerFn func(*Session, *http.Request) error
+type ConnectHandlerFn func(*Session, *http.Request, string) error
 
-func (fn ConnectHandlerFn) Serve(s *Session, r *http.Request) error {
-	return fn(s, r)
+func (fn ConnectHandlerFn) Serve(s *Session, r *http.Request, remote string) error {
+	return fn(s, r, remote)
 }
 
-var PassthroughConnectHandler ConnectHandlerFn = func(session *Session, req *http.Request) (err error) {
-	conn, err := session.dialer(session.ctx, req)
+var PassthroughConnectHandler ConnectHandlerFn = func(session *Session, req *http.Request, remote string) (err error) {
+	conn, err := session.dialer(session.ctx, remote)
 	if err != nil {
 		return err
 	}
@@ -36,7 +36,7 @@ var PassthroughConnectHandler ConnectHandlerFn = func(session *Session, req *htt
 
 type TLSBridge struct {}
 
-func (b *TLSBridge) Serve(session *Session, connectRequest *http.Request) error {
+func (b *TLSBridge) Serve(session *Session, connectRequest *http.Request, remote string) error {
 	err := session.proxy.tlsBridge(session)
 	if err != nil {
 		return err
@@ -47,10 +47,7 @@ func (b *TLSBridge) Serve(session *Session, connectRequest *http.Request) error 
 		return err
 	}
 
-	req.URL.Host = connectRequest.URL.Host
-	req = ToProxy(req)
-
-	return session.handleRequest(req)
+	return session.handleRequest(req, remote)
 }
 
 type Session struct {
@@ -82,7 +79,7 @@ func (s *Session) doRequest(req *http.Request, remoteConn net.Conn) (*http.Respo
 	return resp, nil
 }
 
-func (s *Session) handleRequest(req *http.Request) error {
+func (s *Session) handleRequest(req *http.Request, remote string) error {
 
 	var (
 		remoteConn net.Conn
@@ -99,7 +96,7 @@ func (s *Session) handleRequest(req *http.Request) error {
 
 	switch {
 	case strings.ToLower(req.Header.Get("Upgrade")) == "websocket":
-		remoteConn, err = s.dialer(s.ctx, req)
+		remoteConn, err = s.dialer(s.ctx, remote)
 		if err != nil {
 			return err
 		}
@@ -127,13 +124,13 @@ func (s *Session) handleRequest(req *http.Request) error {
 				case cache.NoCachableResponseEvent:
 					s.logger.Debugf("response not cachable")
 				case cache.CachingResponseEvent:
-					s.logger.Debugf("caching response")
+					s.logger.Debugf("caching response with pk: %s", cache.PrimaryKey(ee.Request))
 				default:
 					s.logger.Debugf("Unknown event: %#T", e)
 				}
 			}))).
 			Serve(s.clientConn, cache.DoerFn(func(r *http.Request) (*http.Response, error) {
-				remoteConn, err = s.dialer(s.ctx, req)
+				remoteConn, err = s.dialer(s.ctx, remote)
 				if err != nil {
 					return nil, err
 				}
@@ -147,22 +144,22 @@ func (s *Session) writeStatusLine(req *http.Request, status int, text string) er
 	return err
 }
 
-func (s *Session) handleTunneling(req *http.Request) error {
+func (s *Session) handleTunneling(req *http.Request, remote string) error {
 	s.logger.Debugf("start tunneling request")
 	err := s.writeStatusLine(req, http.StatusOK, http.StatusText(http.StatusOK))
 	if err != nil {
 		return err
 	}
-	return s.proxy.connectHandler.Serve(s, req)
+	return s.proxy.connectHandler.Serve(s, req, remote)
 }
 
-func (s *Session) Serve(req *http.Request) error {
+func (s *Session) Serve(req *http.Request, remote string) error {
 
 	var err error
 	if req.Method == http.MethodConnect {
-		err = s.handleTunneling(req)
+		err = s.handleTunneling(req, remote)
 	} else {
-		err = s.handleRequest(req)
+		err = s.handleRequest(req, remote)
 	}
 	if err != nil {
 		s.logger.Error(err)
