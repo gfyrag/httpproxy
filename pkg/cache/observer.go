@@ -158,3 +158,31 @@ func CachingResponseError(r *http.Request, e error) CachingResponseErrorEvent {
 		Err: e,
 	}
 }
+
+type RespondEvent struct {
+	baseEvent
+	Response *http.Response
+}
+func (e RespondEvent) isEvent() {}
+func Respond(r *http.Request, rsp *http.Response) RespondEvent {
+	return RespondEvent{
+		baseEvent: baseEvent{
+			Request: r,
+			When: time.Now(),
+		},
+		Response: rsp,
+	}
+}
+
+type LockEvent struct {
+	baseEvent
+}
+func (e LockEvent) isEvent() {}
+func Lock(r *http.Request) LockEvent {
+	return LockEvent{
+		baseEvent: baseEvent{
+			Request: r,
+			When: time.Now(),
+		},
+	}
+}

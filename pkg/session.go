@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"sync"
 	"github.com/Sirupsen/logrus"
-	"net/http/httputil"
 	"bufio"
 	"fmt"
 	"github.com/pkg/errors"
@@ -59,11 +58,25 @@ type Session struct {
 	ctx          context.Context
 }
 
+func (s *Session) logRequest(req *http.Request, msg string, args ...interface{}) {
+	s.logger.WithFields(logrus.Fields{
+		"url": req.URL,
+		"headers": req.Header,
+		"method": req.Method,
+		"host": req.Host,
+	}).Debugf(msg, args...)
+}
+
+func (s *Session) logResponse(rsp *http.Response, msg string, args ...interface{}) {
+	s.logger.WithFields(logrus.Fields{
+		"statusCode": rsp.StatusCode,
+		"status": rsp.Status,
+		"headers": rsp.Header,
+	}).Debugf(msg, args...)
+}
+
 func (s *Session) doRequest(req *http.Request, remoteConn net.Conn) (*http.Response, error) {
-	if s.logger.Level <= logrus.DebugLevel {
-		data, _ := httputil.DumpRequest(req, false)
-		s.logger.Logger.Writer().Write([]byte(data))
-	}
+	s.logRequest(req, "doing remote request")
 	err := req.Write(remoteConn)
 	if err != nil {
 		return nil, errors.Wrap(err, "write request to remote")
@@ -72,10 +85,7 @@ func (s *Session) doRequest(req *http.Request, remoteConn net.Conn) (*http.Respo
 	if err != nil {
 		return nil, errors.Wrap(err, "read response from remote")
 	}
-	if s.logger.Level <= logrus.DebugLevel {
-		data, _ := httputil.DumpResponse(resp, false)
-		s.logger.Logger.Writer().Write([]byte(data))
-	}
+	s.logResponse(resp, "receiving response from remote")
 	return resp, nil
 }
 
@@ -104,6 +114,9 @@ func (s *Session) handleRequest(req *http.Request, remote string) error {
 		io.Copy(s.clientConn, remoteConn)
 		return nil
 	default:
+		s.logger = s.logger.WithField("pk", cache.PrimaryKey(req))
+		s.logRequest(req, "handle request")
+		
 		return s.proxy.cache.
 			WithOptions(cache.WithObserver(cache.ObserverFn(func(e cache.Event) {
 				switch ee := e.(type) {
@@ -124,7 +137,11 @@ func (s *Session) handleRequest(req *http.Request, remote string) error {
 				case cache.NoCachableResponseEvent:
 					s.logger.Debugf("response not cachable")
 				case cache.CachingResponseEvent:
-					s.logger.Debugf("caching response with pk: %s", cache.PrimaryKey(ee.Request))
+					s.logger.Debugf("caching response")
+				case cache.RespondEvent:
+					s.logResponse(ee.Response, "respond")
+				case cache.LockEvent:
+					s.logger.Debugf("lock request")
 				default:
 					s.logger.Debugf("Unknown event: %#T", e)
 				}

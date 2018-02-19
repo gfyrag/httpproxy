@@ -28,7 +28,7 @@ func PrimaryKey(r *http.Request) string {
 			scheme = "http"
 		}
 	}
-	return fmt.Sprintf("%s:%s:%s:%s?%s", r.Method, scheme, host, r.URL.RawPath, r.URL.RawQuery)
+	return fmt.Sprintf("%s:%s:%s:%s?%s", r.Method, scheme, host, r.URL.EscapedPath(), r.URL.RawQuery)
 }
 
 type Doer interface {
@@ -142,6 +142,7 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 		l := c.lock(req)
 		l.Lock()
 		defer l.Unlock()
+		c.observer.Observe(Lock(req))
 
 		noCacheOnRequest, err := NoCache(req)
 		if err != nil {
@@ -249,6 +250,8 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 			rsp.Header.Set("Date", now.Format(http.TimeFormat))
 		}
 	}
+
+	c.observer.Observe(Respond(req, rsp))
 
 	return rsp.Write(w)
 }

@@ -14,7 +14,6 @@ import (
 	"bytes"
 	"crypto/tls"
 	"errors"
-	"net/http/httputil"
 )
 
 var (
@@ -101,11 +100,6 @@ func (p *proxy) serve(conn net.Conn) error {
 	req, err := http.ReadRequest(bufio.NewReader(session.clientConn))
 	if err != nil {
 		return err
-	}
-
-	if p.logger.Level <= logrus.DebugLevel {
-		data, _ := httputil.DumpRequest(req, false)
-		p.logger.Writer().Write([]byte(data))
 	}
 
 	u := *req.URL
