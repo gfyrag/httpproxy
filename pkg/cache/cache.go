@@ -40,14 +40,14 @@ func (fn DoerFn) Do(r *http.Request) (*http.Response, error) {
 }
 
 type Cache struct {
-	storage    Storage
+	storage    *Storage
 	validators Validators
 	mu *sync.Mutex
 	requestsMu map[string]*sync.Mutex
 	observer Observer
 }
 
-func (c *Cache) Storage() Storage {
+func (c *Cache) Storage() *Storage {
 	return c.storage
 }
 
@@ -64,53 +64,6 @@ func (c *Cache) lock(req *http.Request) *sync.Mutex {
 		c.requestsMu[key] = mu
 	}
 	return mu
-}
-
-func (c *Cache) selectCacheEntry(r *http.Request) (*Recipe, error) {
-	entries, err := c.storage.List(PrimaryKey(r))
-	if err != nil {
-		return nil, err
-	}
-	for i, entry := range entries {
-		if entry.MatchRequest(r) {
-			if i < len(entries)-1 {
-				for _, remainingEntry := range entries[i+1:] {
-					remainingEntry.Close()
-				}
-			}
-			return entry, nil
-		}
-		entry.Close()
-	}
-	return nil, nil
-}
-
-// See RFC7234 section 4.3
-func (c *Cache) validationRequest(w io.Writer, cl Doer, recipe *Recipe) (*http.Response, error) {
-	valid := new(http.Request)
-	*valid = *recipe.Request
-	for _, v := range c.validators {
-		v.Process(recipe.Response, valid)
-	}
-	//now := time.Now()
-	rsp, err := cl.Do(valid)
-	if err != nil {
-		return nil, err
-	}
-	// See RFC7234 section 4.3.3
-	if rsp.StatusCode > 500 {
-		return nil, ErrValidationFailed
-	}
-	if rsp.StatusCode == http.StatusNotModified {
-		c.observer.Observe(Revalidated(valid))
-		// Update stored response
-		// See section 4.3.4
-		recipe.Response.Header = rsp.Header
-		rsp = recipe.Response
-	}
-
-	// TODO: See RFC7234 section 4.3.3 for removing warning Header
-	return rsp, nil
 }
 
 // Return a cached response if found a non expired recipe
@@ -131,8 +84,7 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 		}
 	}()
 
-	err = PermitCache(req)
-	if err != nil {
+	if !PermitCache(req) {
 		c.observer.Observe(NoCachableRequest(req, err))
 		rsp, err = doer.Do(req)
 		if err != nil {
@@ -144,25 +96,16 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 		defer l.Unlock()
 		c.observer.Observe(Lock(req))
 
-		noCacheOnRequest, err := NoCache(req)
+		recipe, err := c.storage.Retrieve(req)
 		if err != nil {
 			return err
-		}
-
-		recipe, err := c.selectCacheEntry(req)
-		if err != nil {
-			return err
-		}
-		if recipe == nil {
-			c.observer.Observe(CacheMiss(req))
-		} else {
-			c.observer.Observe(CacheHit(req))
 		}
 
 		now := time.Now().UTC()
 
-		if IsConditionalRequest(req) {
-			if recipe != nil {
+		if recipe != nil {
+			switch {
+			case IsConditionalRequest(req):
 				if c.validators.Validate(recipe) {
 					rsp = recipe.Response
 					if rsp.Body != nil {
@@ -170,40 +113,42 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 						rsp.Body = nil
 					}
 					recipe.Response.StatusCode = http.StatusNotModified
-					c.observer.Observe(RevalidatedFromCache(req))
 				} else {
-					c.observer.Observe(RevalidatedFromCacheFailed(req))
+					rsp, err = doer.Do(req)
+					// Possibly need caching
 				}
-			}
-		} else if recipe != nil {
-			if noCacheOnRequest {
-				// the request contain the no-cache cache directive
+			// See RFC7234 section 4.3
+			case NoCache(req) || NoCache(recipe.Response) || Expired(recipe.Response, now):
 				// (Section 5.2.2.2), we have to revalidate
-				rsp, err = c.validationRequest(w, doer, recipe)
-			} else {
-				// the stored response contain the no-cache cache directive
-				// (Section 5.2.2.2), we have to revalidate
-				noCacheOnResponse, err := NoCache(recipe.Response)
-				if err == nil {
-					if noCacheOnResponse || Expired(recipe.Response, now) {
-						rsp, err = c.validationRequest(w, doer, recipe)
-					} else {
-						rsp = recipe.Response
-						rsp.Header.Set("Age", fmt.Sprintf("%d", int64(Age(rsp, recipe.RequestDate, recipe.ResponseDate).Seconds())))
-						c.observer.Observe(ServedFromCache(req))
-					}
+				for _, v := range c.validators {
+					v.Process(recipe.Response, req)
 				}
+
+				rsp, err = doer.Do(req)
+				if err != nil {
+					return err
+				}
+				// See RFC7234 section 4.3.3
+				if rsp.StatusCode > 500 {
+					return ErrValidationFailed
+				}
+				if rsp.StatusCode == http.StatusNotModified {
+					// Update stored response
+					// See section 4.3.4
+					recipe.Response.Header = rsp.Header
+					rsp = recipe.Response
+					// Need caching with original response updated
+				}
+				// TODO: See RFC7234 section 4.3.3 for removing warning Header
+			default:
+				rsp = recipe.Response
+				rsp.Header.Set("Age", fmt.Sprintf("%d", int64(Age(rsp, recipe.RequestDate, recipe.ResponseDate).Seconds())))
 			}
+		} else {
+			rsp, err = doer.Do(req)
 		}
 		if err != nil {
 			return err
-		}
-
-		if rsp == nil {
-			rsp, err = doer.Do(req)
-			if err != nil {
-				return err
-			}
 		}
 
 		if recipe == nil || rsp != recipe.Response {
@@ -212,8 +157,7 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 				recipe.Close()
 			}
 
-			permitCache := PermitCache(rsp)
-			if permitCache == nil {
+			if PermitCache(rsp) {
 				wg := sync.WaitGroup{}
 				wg.Add(1)
 				defer wg.Wait()
@@ -241,7 +185,7 @@ func (c *Cache) Serve(w io.Writer, doer Doer, req *http.Request) error {
 					}
 				}()
 			} else {
-				c.observer.Observe(NoCachableResponse(req, permitCache))
+				c.observer.Observe(NoCachableResponse(req))
 			}
 		}
 
@@ -279,7 +223,7 @@ func WithValidators(validators ...Validator) cacheOptionFn {
 	}
 }
 
-func WithStorage(storage Storage) cacheOptionFn {
+func WithStorage(storage *Storage) cacheOptionFn {
 	return func(c *Cache) {
 		c.storage = storage
 	}

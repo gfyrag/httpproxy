@@ -48,18 +48,12 @@ func (c *Recipe) Close() {
 	c.Response.Body.Close()
 }
 
-type Storage interface {
-	List(string) ([]*Recipe, error)
-	Insert(string, *Recipe) error
-	Delete(string, *Recipe) error
-}
-
-type vfsStorage struct {
+type Storage struct {
 	vfs.Filesystem
 	basePath string
 }
 
-func (d *vfsStorage) path(key string) string {
+func (d *Storage) path(key string) string {
 	encoded := base64.StdEncoding.EncodeToString([]byte(key))
 	path := d.basePath
 	for i := 0; i < len(encoded); i += 4 {
@@ -70,7 +64,7 @@ func (d *vfsStorage) path(key string) string {
 
 // Don't close request/response files since these will be consumed by the caller.
 // Therefore, it is the caller responsability to properly close file descriptors
-func (s *vfsStorage) reconstruct(p string) (*Recipe, error) {
+func (s *Storage) reconstruct(p string) (*Recipe, error) {
 	infoFile, err := vfs.Open(s.Filesystem, filepath.Join(p, "info.json"))
 	if err != nil {
 		return nil, err
@@ -102,7 +96,7 @@ func (s *vfsStorage) reconstruct(p string) (*Recipe, error) {
 	}
 	return recipe, nil
 }
-func (s *vfsStorage) List(key string) ([]*Recipe, error) {
+func (s *Storage) List(key string) ([]*Recipe, error) {
 	path := s.path(key)
 	fos, err := s.Filesystem.ReadDir(path)
 	if err != nil {
@@ -122,7 +116,7 @@ func (s *vfsStorage) List(key string) ([]*Recipe, error) {
 	return res, nil
 }
 
-func (s *vfsStorage) Insert(key string, r *Recipe) error {
+func (s *Storage) Insert(key string, r *Recipe) error {
 
 	path := filepath.Join(s.path(key), r.secondaryKey())
 
@@ -131,7 +125,7 @@ func (s *vfsStorage) Insert(key string, r *Recipe) error {
 		return err
 	}
 
-	infoFile, err := vfs.Create(s.Filesystem, filepath.Join(path, "info.json"))
+	infoFile, err := s.Filesystem.OpenFile(filepath.Join(path, "info.json"), os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		return err
 	}
@@ -141,7 +135,7 @@ func (s *vfsStorage) Insert(key string, r *Recipe) error {
 		return err
 	}
 
-	requestFile, err := vfs.Create(s.Filesystem, filepath.Join(path, "request"))
+	requestFile, err := s.Filesystem.OpenFile(filepath.Join(path, "request"), os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		return err
 	}
@@ -151,7 +145,7 @@ func (s *vfsStorage) Insert(key string, r *Recipe) error {
 		return err
 	}
 
-	responseFile, err := vfs.Create(s.Filesystem, filepath.Join(path, "response"))
+	responseFile, err := s.Filesystem.OpenFile(filepath.Join(path, "response"), os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		return err
 	}
@@ -163,16 +157,34 @@ func (s *vfsStorage) Insert(key string, r *Recipe) error {
 
 	return nil
 }
-func (s *vfsStorage) Delete(key string, r *Recipe) error {
+func (s *Storage) Delete(key string, r *Recipe) error {
 	return vfs.RemoveAll(s.Filesystem, filepath.Join(s.path(key), r.secondaryKey()))
 }
-
-func MemStorage() *vfsStorage {
-	return &vfsStorage{Filesystem: memfs.Create(), basePath: ""}
+func (s *Storage) Retrieve(r *http.Request) (*Recipe, error) {
+	entries, err := s.List(PrimaryKey(r))
+	if err != nil {
+		return nil, err
+	}
+	for i, entry := range entries {
+		if entry.MatchRequest(r) {
+			if i < len(entries)-1 {
+				for _, remainingEntry := range entries[i+1:] {
+					remainingEntry.Close()
+				}
+			}
+			return entry, nil
+		}
+		entry.Close()
+	}
+	return nil, nil
 }
 
-func Dir(dir string) *vfsStorage {
-	return &vfsStorage{Filesystem: vfs.OS(), basePath: dir}
+func MemStorage() *Storage {
+	return &Storage{Filesystem: memfs.Create(), basePath: ""}
+}
+
+func Dir(dir string) *Storage {
+	return &Storage{Filesystem: vfs.OS(), basePath: dir}
 }
 
 

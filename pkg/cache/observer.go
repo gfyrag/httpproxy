@@ -40,16 +40,14 @@ func NoCachableRequest(r *http.Request, err error) NoCachableRequestEvent {
 
 type NoCachableResponseEvent struct {
 	baseEvent
-	Why error
 }
 func (e NoCachableResponseEvent) isEvent() {}
-func NoCachableResponse(r *http.Request, err error) NoCachableResponseEvent {
+func NoCachableResponse(r *http.Request) NoCachableResponseEvent {
 	return NoCachableResponseEvent{
 		baseEvent: baseEvent{
 			Request: r,
 			When: time.Now(),
 		},
-		Why: err,
 	}
 }
 

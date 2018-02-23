@@ -27,7 +27,7 @@ var RootCmd = &cobra.Command{
 		var options []httpproxy.Option
 		options = append(options, httpproxy.WithLogger(logger))
 
-		var storage cache.Storage
+		var storage *cache.Storage
 		switch viper.GetString("store") {
 		case "memory":
 			storage = cache.MemStorage()

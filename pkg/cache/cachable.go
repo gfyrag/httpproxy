@@ -49,7 +49,7 @@ func IsConditionalRequest(r *http.Request) bool {
 // Will panic if called with any type other than *http.Response or *http.Serve
 // See RFC7234 section 3
 // Does not allow cache-control extensions (See RFC7234 section 5.2.3)
-func PermitCache(v interface{}) (error) {
+func PermitCache(v interface{}) bool {
 
 	var (
 		expires *time.Time
@@ -59,36 +59,39 @@ func PermitCache(v interface{}) (error) {
 	case *http.Response:
 		headers = vv.Header
 		if !CachableStatus(vv) {
-			return ErrNotCachableStatus
+			return false
 		}
 		expires = Expires(vv)
 	case *http.Request:
 		headers = vv.Header
 		if !CachableMethod(vv) {
-			return ErrNotCachableMethod
+			return false
 		}
 		if headers.Get("Authorization") != "" {
-			return ErrPrivateCache
+			return false
 		}
 	default:
 		panic("unexpected object")
 	}
 	cc, err := CacheControl(v)
 	if err != nil {
-		return err
+		if expires != nil {
+			return true
+		}
+		return false
 	}
 	if expires == nil && !cc.Cacheable() {
-		return ErrNoFreshnessInfo
+		return false
 	}
 
-	return nil
+	return true
 }
 
 // Will panic if called with any type other than *http.Response or *http.Serve
 // The no-cache directive can be used in request and responses
 // In both case, this is used to prevent a cache to use a cached response without revalidating against the origin server
 // See RFC7234 section 5.2.2.2
-func NoCache(v interface{}) (bool, error) {
+func NoCache(v interface{}) bool {
 
 	var headers http.Header
 	switch vv := v.(type) {
@@ -100,7 +103,7 @@ func NoCache(v interface{}) (bool, error) {
 		// See RFC7234 section 5.4
 		for _, pragma := range normalizeHeader("Pragma", headers) {
 			if pragma == "no-cache" {
-				return true, nil
+				return true
 			}
 		}
 	default:
@@ -111,27 +114,28 @@ func NoCache(v interface{}) (bool, error) {
 	cacheControl := cacheControl{}
 	err := cacheControl.Parse(v)
 	if err != nil {
-		return true, err
+		return false
 	}
-	return cacheControl.noCache, nil
+	return cacheControl.noCache
 }
 
-func Expiration(r *http.Response, responseDate time.Time) (time.Time, error) {
+func Expiration(r *http.Response, responseDate time.Time) *time.Time {
 	freshnessLifetime, err := FreshnessLifetime(r, responseDate)
 	if err != nil {
-		return time.Time{}, err
+		return &time.Time{}
 	}
 
 	date := Date(r)
 	if date.IsZero() {
 		date = responseDate
 	}
-	return date.Add(freshnessLifetime), nil
+	date = date.Add(freshnessLifetime)
+	return &date
 }
 
 func Expired(rsp *http.Response, responseDate time.Time) bool {
-	e, err := Expiration(rsp, responseDate)
-	if err != nil {
+	e := Expiration(rsp, responseDate)
+	if e == nil {
 		return true
 	}
 	now := time.Now().UTC()
